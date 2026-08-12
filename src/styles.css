@@ -1,0 +1,944 @@
+/* Cerberus interface styles.
+   The palette is locked. See CLAUDE.md before you change a color. */
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  /* Locked brand colors. */
+  --black: #0b0314;
+  --purple-royal: #3a125e;
+  --purple-tyrian: #4a0e4e;
+  --cyan: #00f5ff;
+  --teal: #008080;
+
+  /* Values derived from the locked colors. */
+  --surface: #150826;
+  --surface-raised: #1d0e33;
+  --purple-lift: #5a2090;
+  --purple-soft: #9d6bff;
+
+  /* The accent is a lighter value of Teal. Pure #008080 only reaches 3.7:1 on
+     the page black, which fails for small text. This ramp clears 7:1 and still
+     reads calmer and more professional than Bright Cyan. */
+  --accent: #14b8a6;
+  --accent-dim: #0d9488;
+  --accent-glow: #2dd4bf;
+
+  --text: #ece6f5;
+  --muted: #9a8bb5;
+  --faint: #6b5c85;
+
+  --line: rgba(157, 107, 255, 0.18);
+  --line-strong: rgba(45, 212, 191, 0.5);
+  --field: rgba(157, 107, 255, 0.05);
+  --danger: #d13a52;
+  --warn: #c9922f;
+
+  --font-wordmark: 'Grenze Gotisch', 'Bebas Neue', Impact, sans-serif;
+
+  /* One type scale for the whole product. Nothing here is poster sized. */
+  --fs-display: clamp(1.6rem, 2.1vw, 2.1rem);
+  --fs-title: 1.5rem;
+  --fs-body: 0.9375rem;
+  --fs-sm: 0.875rem;
+  --fs-label: 0.75rem;
+  --fs-eyebrow: 0.6875rem;
+
+  --radius: 12px;
+  --radius-lg: 16px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--black);
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- layout --
+   Each panel owns its scrolling. `.auth-card { margin: auto }` is deliberate.
+   Flex centering with align-items clips overflow at the top, which is what made
+   the taller signup form look like it zoomed instead of scrolled.
+   -------------------------------------------------------------------------- */
+
+.cerberus-page {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 480px);
+  background: var(--black);
+}
+
+.brand-panel {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  background: var(--black);
+}
+
+/* The code rain sits behind everything and fades out before it reaches the
+   copy at the bottom of the panel. */
+.matrix-rain {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  opacity: 0.34;
+  mask-image:
+    radial-gradient(ellipse 82% 62% at 50% 34%, #000 25%, transparent 78%),
+    linear-gradient(180deg, #000 0%, #000 48%, transparent 82%);
+  mask-composite: intersect;
+  -webkit-mask-image:
+    radial-gradient(ellipse 82% 62% at 50% 34%, #000 25%, transparent 78%),
+    linear-gradient(180deg, #000 0%, #000 48%, transparent 82%);
+  -webkit-mask-composite: source-in;
+}
+
+/* Purple bloom that lifts the animal off the rain. */
+.brand-glow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 54% 44% at 50% 36%, rgba(58, 18, 94, 0.62), transparent 70%),
+    radial-gradient(ellipse 70% 40% at 50% 100%, rgba(74, 14, 78, 0.4), transparent 72%);
+}
+
+.brand-content {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 28px clamp(24px, 3.6vw, 56px) 32px;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+}
+
+.brand-sigil {
+  height: 42px;
+  width: auto;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(11, 3, 20, 0.7);
+}
+
+.wordmark {
+  font-family: var(--font-wordmark);
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  line-height: 1;
+  color: #fff;
+  text-transform: uppercase;
+  text-shadow: 0 0 22px rgba(157, 107, 255, 0.45);
+}
+
+.brand-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: end center;
+}
+
+.cerberus-beast {
+  width: min(100%, 700px);
+  height: 100%;
+  max-height: 52vh;
+  overflow: visible;
+}
+
+.brand-footer {
+  display: grid;
+  gap: 18px;
+}
+
+.brand-copy {
+  max-width: 46ch;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: var(--fs-eyebrow);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* Blackletter is reserved for the wordmark. A full sentence in it is a
+   legibility problem, not a brand statement. */
+.brand-copy h1 {
+  margin: 0;
+  font-size: var(--fs-display);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: #fff;
+}
+
+.brand-blurb {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.signal-grid div {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(21, 8, 38, 0.66);
+  backdrop-filter: blur(12px);
+}
+
+.signal-grid strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.signal-grid span {
+  display: block;
+  color: var(--faint);
+  font-size: var(--fs-label);
+  line-height: 1.4;
+}
+
+/* ------------------------------------------------------------------ auth --
+   The panel background is flat on purpose. The field labels sit in a notch cut
+   out of the input border, and the notch is painted with the panel color. A
+   gradient here would show a seam behind every label.
+   -------------------------------------------------------------------------- */
+
+.auth-panel {
+  display: flex;
+  overflow-y: auto;
+  padding: clamp(24px, 4vh, 48px) clamp(24px, 3vw, 44px);
+  background: var(--black);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 392px;
+  margin: auto;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  margin-bottom: 24px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.auth-tabs button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  transition: color 160ms var(--ease), background 160ms var(--ease);
+}
+
+.auth-tabs button:hover {
+  color: var(--text);
+}
+
+.auth-tabs button.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--purple-tyrian), var(--purple-royal));
+  box-shadow: 0 6px 18px rgba(58, 18, 94, 0.55);
+}
+
+.step-rail {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+
+.step-rail li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 2px solid var(--line);
+  color: var(--faint);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  transition: border-color 260ms var(--ease), color 260ms var(--ease);
+}
+
+.step-rail li[data-state='current'],
+.step-rail li[data-state='done'] {
+  border-top-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.step-dot {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 0.625rem;
+  font-weight: 700;
+}
+
+.step-rail li[data-state='current'] .step-dot {
+  border-color: var(--accent);
+  color: #04120f;
+  background: var(--accent);
+}
+
+.step-rail li[data-state='done'] .step-dot {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.auth-heading {
+  margin-bottom: 22px;
+}
+
+.auth-heading h2 {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  color: #fff;
+}
+
+.auth-blurb {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+/* The card animates between step heights instead of snapping. With
+   `.auth-card { margin: auto }` this removes the re-centering lurch that made
+   the old signup form look like it zoomed. Height is driven from JS. */
+.step-viewport {
+  overflow: hidden;
+  margin-bottom: 16px;
+  transition: height 320ms var(--ease);
+}
+
+/* Room so focus rings are not clipped by the overflow above. */
+.step-inner {
+  padding: 6px;
+}
+
+.step-pane {
+  display: grid;
+  gap: 20px;
+  align-content: start;
+}
+
+/* Keyed branch wrapper. It must not become a grid item, or the pane row gap
+   collapses around it. */
+.branch {
+  display: contents;
+}
+
+/* ----------------------------------------------------------------- field --
+   The label sits in a notch on the top border of the input. `min-width: 0` on
+   both the field and the shell is load bearing. Grid items default to
+   `min-width: auto`, so without it a select refuses to shrink below the width
+   of its longest option and overlaps the next column.
+   -------------------------------------------------------------------------- */
+
+.field {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.field > span {
+  position: absolute;
+  top: -7px;
+  left: 11px;
+  z-index: 2;
+  max-width: calc(100% - 22px);
+  padding: 0 6px;
+  overflow: hidden;
+  color: var(--muted);
+  background: var(--black);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 160ms var(--ease);
+}
+
+.field:focus-within > span {
+  color: var(--accent);
+}
+
+.input-shell {
+  min-width: 0;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--faint);
+  transition: border-color 160ms var(--ease), background 160ms var(--ease), box-shadow 160ms var(--ease);
+}
+
+.input-shell:focus-within {
+  border-color: var(--line-strong);
+  background: rgba(45, 212, 191, 0.05);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.16);
+  color: var(--accent);
+}
+
+.input-shell input,
+.input-shell select {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: var(--fs-sm);
+  font-weight: 450;
+}
+
+.input-shell input::placeholder {
+  color: var(--faint);
+}
+
+.input-shell select {
+  appearance: none;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
+.input-shell option {
+  color: #150826;
+  background: #ece6f5;
+}
+
+.select-caret {
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.ghost-icon-button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color 140ms var(--ease), background 140ms var(--ease);
+}
+
+.ghost-icon-button:hover {
+  color: var(--text);
+  background: rgba(157, 107, 255, 0.14);
+}
+
+.split-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 12px;
+}
+
+.split-fields > * {
+  min-width: 0;
+}
+
+/* -------------------------------------------------------------- password -- */
+
+.strength {
+  display: grid;
+  gap: 6px;
+  margin-top: -6px;
+}
+
+.strength-track {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.strength-track span {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(157, 107, 255, 0.16);
+  transition: background 220ms var(--ease);
+}
+
+.strength-track span[data-on='true'] {
+  background: var(--strength-color, var(--accent));
+}
+
+.strength-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-label);
+  line-height: 1.4;
+}
+
+.strength-note strong {
+  color: var(--strength-color, var(--accent));
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------------- controls -- */
+
+.account-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.account-picker button {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+  background: rgba(157, 107, 255, 0.04);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms var(--ease), background 180ms var(--ease);
+}
+
+.account-picker button:hover {
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(157, 107, 255, 0.08);
+}
+
+.account-picker button.selected {
+  border-color: var(--line-strong);
+  background: linear-gradient(135deg, rgba(58, 18, 94, 0.85), rgba(74, 14, 78, 0.5));
+  color: var(--text);
+}
+
+.account-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.account-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-text strong {
+  display: block;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.account-text small {
+  display: block;
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+}
+
+.account-check {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: #04120f;
+}
+
+.account-picker button.selected .account-check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.recap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(157, 107, 255, 0.05);
+  color: var(--muted);
+  font-size: var(--fs-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recap-chip {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(45, 212, 191, 0.14);
+  font-weight: 600;
+}
+
+.auth-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--muted);
+  font-size: var(--fs-label);
+}
+
+.auth-meta label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.auth-meta input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--purple-lift);
+}
+
+.auth-meta a {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.auth-meta a:hover {
+  text-decoration: underline;
+}
+
+.step-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* `width: 100%` covers the login form, where the button is the only child and
+   has no flex parent to stretch it. `flex: 1` covers the signup row, where it
+   shares space with Back. */
+.submit-button {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius);
+  color: #fff;
+  background: linear-gradient(135deg, var(--purple-tyrian) 0%, var(--purple-royal) 55%, var(--purple-lift) 130%);
+  box-shadow: 0 10px 24px rgba(58, 18, 94, 0.5);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  transition: filter 160ms var(--ease), transform 160ms var(--ease), opacity 160ms var(--ease);
+}
+
+.submit-button:hover:not(:disabled) {
+  filter: brightness(1.18);
+}
+
+.submit-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.submit-button:disabled {
+  opacity: 0.4;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.back-button {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+}
+
+.back-button:hover {
+  color: var(--text);
+  border-color: rgba(45, 212, 191, 0.35);
+}
+
+.step-pane[data-direction='forward'] {
+  animation: pane-in-forward 300ms var(--ease) both;
+}
+
+.step-pane[data-direction='back'] {
+  animation: pane-in-back 300ms var(--ease) both;
+}
+
+@keyframes pane-in-forward {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+@keyframes pane-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+
+/* ---------------------------------------------------------------- beast --
+   Idle motion only. Cursor tracking is applied to other elements from JS, so
+   nothing here fights it.
+   -------------------------------------------------------------------------- */
+
+.cb-breathe {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: cb-breathe 5.2s ease-in-out infinite;
+}
+
+@keyframes cb-breathe {
+  0%,
+  100% {
+    transform: scale(1) translateY(0);
+  }
+  50% {
+    transform: scale(1.013) translateY(-3px);
+  }
+}
+
+.cb-ear {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: cb-ear 6.5s ease-in-out infinite;
+}
+
+@keyframes cb-ear {
+  0%,
+  86%,
+  100% {
+    transform: rotate(0deg);
+  }
+  90% {
+    transform: rotate(-4deg);
+  }
+  94% {
+    transform: rotate(2.5deg);
+  }
+}
+
+.cb-lid {
+  transform-box: fill-box;
+  transform-origin: 50% 0%;
+  animation: cb-blink 6.8s ease-in-out infinite;
+}
+
+@keyframes cb-blink {
+  0%,
+  93%,
+  100% {
+    transform: scaleY(0);
+  }
+  95.5%,
+  96.5% {
+    transform: scaleY(1);
+  }
+}
+
+.cb-eyeglow {
+  animation: cb-pulse 3.4s ease-in-out infinite;
+}
+
+.cb-core {
+  animation: cb-pulse 4.6s ease-in-out infinite;
+}
+
+@keyframes cb-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+.cb-ember {
+  animation-name: cb-ember;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  opacity: 0;
+}
+
+@keyframes cb-ember {
+  0% {
+    transform: translateY(0) translateX(0);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.75;
+  }
+  70% {
+    opacity: 0.4;
+  }
+  100% {
+    transform: translateY(-560px) translateX(24px);
+    opacity: 0;
+  }
+}
+
+/* ----------------------------------------------------------- responsive -- */
+
+@media (max-width: 1080px) {
+  .cerberus-page {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-panel {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand-content {
+    min-height: auto;
+    padding-bottom: 28px;
+  }
+
+  .cerberus-beast {
+    max-height: 40vh;
+  }
+
+  .auth-panel {
+    overflow-y: visible;
+  }
+
+  .auth-card {
+    max-width: 440px;
+  }
+}
+
+@media (max-width: 560px) {
+  .brand-content,
+  .auth-panel {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .signal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .split-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .step-rail .step-label {
+    display: none;
+  }
+
+  .auth-meta {
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .cb-lid {
+    display: none;
+  }
+}
