@@ -5,8 +5,15 @@ import { z } from 'zod';
 import { db } from '../db/client.js';
 import { memberships, organizations, users } from '../db/schema.js';
 import { burnTime, hashPassword, verifyPassword } from './password.js';
+import {
+  publicOrganizationColumns,
+  publicUserColumns,
+  toPublicOrganization,
+  toPublicUser,
+} from './present.js';
 import { createSession, destroySession, readSession } from './session.js';
-import type { ApiError, SessionPayload } from '../../../shared/api.js';
+import { fail, fieldErrors } from '../http/errors.js';
+import type { SessionPayload } from '../../../shared/api.js';
 import { EMAIL_PATTERN, PASSWORD_MAX_LENGTH, gradePassword, normalizeEmail } from '../../../shared/password.js';
 
 const email = z.string().trim().toLowerCase().regex(EMAIL_PATTERN, 'Enter a valid email address.');
@@ -39,19 +46,6 @@ const signupSchema = z
   });
 
 const loginSchema = z.object({ email, password: z.string().max(PASSWORD_MAX_LENGTH) });
-
-function fail(code: ApiError['error']['code'], message: string, fields?: Record<string, string>): ApiError {
-  return { error: { code, message, ...(fields ? { fields } : {}) } };
-}
-
-function fieldErrors(error: z.ZodError): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const issue of error.issues) {
-    const key = issue.path.join('.') || 'form';
-    out[key] ??= issue.message;
-  }
-  return out;
-}
 
 /** Slugs must be unique. A short random suffix avoids a retry loop. */
 function toSlug(name: string): string {
@@ -96,7 +90,7 @@ export default async function authRoutes(app: FastifyInstance) {
           teamSize: isPersonal ? null : (input.teamSize ?? null),
           useCase: isPersonal ? null : (input.useCase ?? null),
         })
-        .returning();
+        .returning(publicOrganizationColumns);
 
       const [user] = await tx
         .insert(users)
@@ -107,7 +101,7 @@ export default async function authRoutes(app: FastifyInstance) {
           githubHandle: isPersonal ? (input.githubHandle ?? null) : null,
           primaryStack: isPersonal ? (input.primaryStack ?? null) : null,
         })
-        .returning();
+        .returning(publicUserColumns);
 
       if (!organization || !user) throw new Error('Insert returned no row.');
 
@@ -120,21 +114,8 @@ export default async function authRoutes(app: FastifyInstance) {
       });
 
       return {
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.fullName,
-          githubHandle: user.githubHandle,
-          primaryStack: user.primaryStack,
-        },
-        organization: {
-          id: organization.id,
-          name: organization.name,
-          slug: organization.slug,
-          kind: organization.kind,
-          teamSize: organization.teamSize,
-          useCase: organization.useCase,
-        },
+        user: toPublicUser(user),
+        organization: toPublicOrganization(organization),
         role: 'owner',
       } satisfies SessionPayload;
     });
@@ -150,7 +131,12 @@ export default async function authRoutes(app: FastifyInstance) {
     }
 
     const address = normalizeEmail(parsed.data.email);
-    const rows = await db.select().from(users).where(eq(users.email, address)).limit(1);
+    // The hash is the only private column this route needs.
+    const rows = await db
+      .select({ ...publicUserColumns, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.email, address))
+      .limit(1);
     const user = rows[0];
 
     if (!user) {
@@ -165,7 +151,7 @@ export default async function authRoutes(app: FastifyInstance) {
     }
 
     const membershipRows = await db
-      .select({ organization: organizations, role: memberships.role })
+      .select({ organization: publicOrganizationColumns, role: memberships.role })
       .from(memberships)
       .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(eq(memberships.userId, user.id))
@@ -180,21 +166,8 @@ export default async function authRoutes(app: FastifyInstance) {
     await createSession(request, reply, user.id, membership.organization.id);
 
     return reply.send({
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        githubHandle: user.githubHandle,
-        primaryStack: user.primaryStack,
-      },
-      organization: {
-        id: membership.organization.id,
-        name: membership.organization.name,
-        slug: membership.organization.slug,
-        kind: membership.organization.kind,
-        teamSize: membership.organization.teamSize,
-        useCase: membership.organization.useCase,
-      },
+      user: toPublicUser(user),
+      organization: toPublicOrganization(membership.organization),
       role: membership.role,
     } satisfies SessionPayload);
   });

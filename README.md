@@ -72,8 +72,16 @@ Install [DBeaver](https://dbeaver.io) and connect it with the same `DATABASE_URL
 
 ## State
 
-The gate and the workspace shell are built. Dashboard, Reporting, and Audit show
-placeholder data from `src/app/data.ts`. Ingestion does not exist yet.
+The gate calls the API. Signup and login post to the API, the session lives in
+an HTTP-only cookie, and the workspace reads the signed-in user from
+`GET /api/auth/me`. This path is written but not yet run against a database.
+
+An organization account sees the Tasks and Audit modules. A personal account
+does not. The sidebar hides them and the router redirects them.
+
+Dashboard, Reporting, and Audit still show placeholder data from
+`src/app/data.ts`. Scheduled, Findings, Assets, Integrations, Workspace,
+Projects, Tasks, and Settings are empty pages. Ingestion does not exist yet.
 
 Read `CLAUDE.md` before you change code. It holds the brand colors, the writing
 rules, and the database rules.
