@@ -11,6 +11,7 @@ import {
   LockKeyhole,
   Mail,
   ShieldCheck,
+  TriangleAlert,
   User,
   Users,
   type LucideIcon,
@@ -18,6 +19,8 @@ import {
 import CerberusBeast from '../components/CerberusBeast';
 import MatrixRain from '../components/MatrixRain';
 import { EMAIL_PATTERN, gradePassword as sharedGradePassword } from '../../shared/password';
+import type { SessionPayload, SignupRequest } from '../../shared/api';
+import { ApiFailure, login, signup } from '../app/api';
 
 type AuthMode = 'login' | 'signup';
 type AccountType = 'personal' | 'organization';
@@ -103,24 +106,43 @@ type BaseFieldProps = {
   icon: LucideIcon;
   name: string;
   value: string;
+  /** A message from the API. The form itself stays silent. */
+  error?: string;
   onChange: (name: string, value: string) => void;
 };
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return (
+    <small className="field-error" role="alert">
+      {message}
+    </small>
+  );
+}
 
 function TextField({
   label,
   icon: Icon,
   name,
   value,
+  error,
   onChange,
   ...rest
 }: BaseFieldProps & Omit<InputHTMLAttributes<HTMLInputElement>, 'name' | 'value' | 'onChange'>) {
   return (
     <label className="field">
       <span>{label}</span>
-      <div className="input-shell">
+      <div className="input-shell" data-invalid={error ? 'true' : undefined}>
         <Icon size={16} aria-hidden="true" />
-        <input name={name} value={value} onChange={(event) => onChange(name, event.target.value)} {...rest} />
+        <input
+          name={name}
+          value={value}
+          aria-invalid={error ? true : undefined}
+          onChange={(event) => onChange(name, event.target.value)}
+          {...rest}
+        />
       </div>
+      <FieldError message={error} />
     </label>
   );
 }
@@ -130,6 +152,7 @@ function SelectField({
   icon: Icon,
   name,
   value,
+  error,
   onChange,
   placeholder,
   options,
@@ -137,7 +160,7 @@ function SelectField({
   return (
     <label className="field">
       <span>{label}</span>
-      <div className="input-shell">
+      <div className="input-shell" data-invalid={error ? 'true' : undefined}>
         <Icon size={16} aria-hidden="true" />
         <select name={name} value={value} onChange={(event) => onChange(name, event.target.value)}>
           <option value="" disabled>
@@ -149,6 +172,7 @@ function SelectField({
         </select>
         <ChevronDown className="select-caret" size={16} aria-hidden="true" />
       </div>
+      <FieldError message={error} />
     </label>
   );
 }
@@ -158,6 +182,7 @@ function PasswordField({
   icon: Icon,
   name,
   value,
+  error,
   onChange,
   autoComplete,
 }: BaseFieldProps & { autoComplete: string }) {
@@ -165,7 +190,7 @@ function PasswordField({
   return (
     <label className="field">
       <span>{label}</span>
-      <div className="input-shell">
+      <div className="input-shell" data-invalid={error ? 'true' : undefined}>
         <Icon size={16} aria-hidden="true" />
         <input
           name={name}
@@ -173,6 +198,7 @@ function PasswordField({
           value={value}
           autoComplete={autoComplete}
           placeholder="••••••••••••"
+          aria-invalid={error ? true : undefined}
           onChange={(event) => onChange(name, event.target.value)}
         />
         <button
@@ -185,6 +211,7 @@ function PasswordField({
           {visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
         </button>
       </div>
+      <FieldError message={error} />
     </label>
   );
 }
@@ -242,22 +269,53 @@ function StepViewport({ children }: { children: ReactNode }) {
   );
 }
 
-export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => void }) {
+/**
+ * The API names a field by its contract name. The form uses its own names.
+ * This maps one to the other so a message lands under the right input.
+ */
+function toFormField(key: string, accountType: AccountType | null): string {
+  if (key === 'email') return accountType === 'organization' ? 'workEmail' : 'email';
+  if (key === 'organizationName') return 'orgName';
+  if (key === 'jobTitle') return 'role';
+  if (key === 'githubHandle') return 'github';
+  if (key === 'primaryStack') return 'stack';
+  return key;
+}
+
+/** Fields the second signup step owns. A failure here sends the user back. */
+const PROFILE_FIELDS = ['fullName', 'email', 'workEmail', 'orgName', 'teamSize', 'role', 'useCase', 'github', 'stack'];
+
+export default function AuthPage({ onAuthenticated }: { onAuthenticated: (session: SessionPayload) => void }) {
   const [mode, setMode] = useState<AuthMode>('login');
   const [step, setStep] = useState(0);
   const [direction, setDirection] = useState<'forward' | 'back'>('forward');
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [values, setValues] = useState<Values>({});
   const [agreed, setAgreed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Values>({});
 
-  const set = (name: string, value: string) => setValues((prev) => ({ ...prev, [name]: value }));
+  const set = (name: string, value: string) => {
+    setValues((prev) => ({ ...prev, [name]: value }));
+    // An edit clears the message for that field. A stale message misleads.
+    setFieldErrors((prev) => {
+      if (!(name in prev)) return prev;
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+  };
   const val = (name: string) => values[name] ?? '';
   const filled = (name: string) => val(name).trim().length > 0;
+  const err = (name: string) => fieldErrors[name];
 
   function switchMode(next: AuthMode) {
     setMode(next);
     setStep(0);
     setDirection('forward');
+    setFormError(null);
+    setFieldErrors({});
   }
 
   function goTo(next: number) {
@@ -272,7 +330,8 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
     if (step === 1) {
       return accountType === 'personal'
         ? filled('fullName') && EMAIL_PATTERN.test(val('email').trim()) && filled('github') && filled('stack')
-        : filled('orgName') &&
+        : filled('fullName') &&
+            filled('orgName') &&
             EMAIL_PATTERN.test(val('workEmail').trim()) &&
             filled('teamSize') &&
             filled('role') &&
@@ -283,10 +342,59 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
 
   const canLogin = EMAIL_PATTERN.test(val('loginEmail').trim()) && filled('loginPassword');
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function buildSignup(): SignupRequest {
+    const personal = accountType === 'personal';
+    return {
+      accountType: personal ? 'personal' : 'organization',
+      fullName: val('fullName').trim(),
+      email: (personal ? val('email') : val('workEmail')).trim(),
+      password: val('password'),
+      ...(personal
+        ? { githubHandle: val('github').trim(), primaryStack: val('stack') }
+        : {
+            organizationName: val('orgName').trim(),
+            teamSize: val('teamSize'),
+            jobTitle: val('role'),
+            useCase: val('useCase'),
+          }),
+    };
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // No backend yet. Submitting a valid form drops you into the workspace.
-    onAuthenticated();
+    if (busy) return;
+
+    setBusy(true);
+    setFormError(null);
+    setFieldErrors({});
+
+    try {
+      const session =
+        mode === 'login'
+          ? await login({ email: val('loginEmail').trim(), password: val('loginPassword') })
+          : await signup(buildSignup());
+
+      // The card unmounts here, so busy stays true and blocks a second submit.
+      onAuthenticated(session);
+    } catch (error) {
+      const failure = error instanceof ApiFailure ? error : null;
+      setFormError(failure?.message ?? 'Something failed. Try again.');
+
+      if (failure) {
+        const mapped: Values = {};
+        for (const [key, message] of Object.entries(failure.fields)) {
+          mapped[toFormField(key, accountType)] = message;
+        }
+        setFieldErrors(mapped);
+
+        // Carry the user back to the step that holds the failing field.
+        if (mode === 'signup' && Object.keys(mapped).some((name) => PROFILE_FIELDS.includes(name))) {
+          goTo(1);
+        }
+      }
+
+      setBusy(false);
+    }
   }
 
   const heading =
@@ -383,6 +491,13 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
             <p className="auth-blurb">{heading.blurb}</p>
           </div>
 
+          {formError && (
+            <p className="auth-error" role="alert">
+              <TriangleAlert size={15} aria-hidden="true" />
+              {formError}
+            </p>
+          )}
+
           {mode === 'login' ? (
             <form onSubmit={handleSubmit}>
               <StepViewport>
@@ -392,6 +507,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                     icon={Mail}
                     name="loginEmail"
                     value={val('loginEmail')}
+                    error={err('loginEmail')}
                     onChange={set}
                     type="email"
                     autoComplete="email"
@@ -402,6 +518,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                     icon={LockKeyhole}
                     name="loginPassword"
                     value={val('loginPassword')}
+                    error={err('loginPassword')}
                     onChange={set}
                     autoComplete="current-password"
                   />
@@ -415,8 +532,8 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                 </div>
               </StepViewport>
 
-              <button className="submit-button" type="submit" disabled={!canLogin}>
-                Log in
+              <button className="submit-button" type="submit" disabled={!canLogin || busy}>
+                {busy ? 'Opening the gate' : 'Log in'}
               </button>
             </form>
           ) : (
@@ -462,6 +579,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                         icon={User}
                         name="fullName"
                         value={val('fullName')}
+                        error={err('fullName')}
                         onChange={set}
                         autoComplete="name"
                         placeholder="Jane Doe"
@@ -471,6 +589,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                         icon={Mail}
                         name="email"
                         value={val('email')}
+                        error={err('email')}
                         onChange={set}
                         type="email"
                         autoComplete="email"
@@ -482,6 +601,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                           icon={Github}
                           name="github"
                           value={val('github')}
+                          error={err('github')}
                           onChange={set}
                           placeholder="janedoe"
                         />
@@ -490,6 +610,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                           icon={Code2}
                           name="stack"
                           value={val('stack')}
+                          error={err('stack')}
                           onChange={set}
                           placeholder="Select"
                           options={stackOptions}
@@ -501,10 +622,21 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                   {step === 1 && accountType === 'organization' && (
                     <div className="branch" key="organization">
                       <TextField
+                        label="Your name"
+                        icon={User}
+                        name="fullName"
+                        value={val('fullName')}
+                        error={err('fullName')}
+                        onChange={set}
+                        autoComplete="name"
+                        placeholder="Jane Doe"
+                      />
+                      <TextField
                         label="Organization name"
                         icon={Building2}
                         name="orgName"
                         value={val('orgName')}
+                        error={err('orgName')}
                         onChange={set}
                         autoComplete="organization"
                         placeholder="Acme Security"
@@ -514,6 +646,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                         icon={Mail}
                         name="workEmail"
                         value={val('workEmail')}
+                        error={err('workEmail')}
                         onChange={set}
                         type="email"
                         autoComplete="email"
@@ -525,6 +658,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                           icon={Users}
                           name="teamSize"
                           value={val('teamSize')}
+                          error={err('teamSize')}
                           onChange={set}
                           placeholder="Select"
                           options={teamSizes}
@@ -534,6 +668,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                           icon={ShieldCheck}
                           name="role"
                           value={val('role')}
+                          error={err('role')}
                           onChange={set}
                           placeholder="Select"
                           options={roleOptions}
@@ -544,6 +679,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                         icon={Code2}
                         name="useCase"
                         value={val('useCase')}
+                        error={err('useCase')}
                         onChange={set}
                         placeholder="Select a use case"
                         options={useCases}
@@ -562,6 +698,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                         icon={LockKeyhole}
                         name="password"
                         value={val('password')}
+                        error={err('password')}
                         onChange={set}
                         autoComplete="new-password"
                       />
@@ -571,6 +708,7 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                         icon={KeyRound}
                         name="confirmPassword"
                         value={val('confirmPassword')}
+                        error={err('confirmPassword')}
                         onChange={set}
                         autoComplete="new-password"
                       />
@@ -596,8 +734,8 @@ export default function AuthPage({ onAuthenticated }: { onAuthenticated: () => v
                     Continue
                   </button>
                 ) : (
-                  <button className="submit-button" type="submit" disabled={!canAdvance}>
-                    Create account
+                  <button className="submit-button" type="submit" disabled={!canAdvance || busy}>
+                    {busy ? 'Creating the account' : 'Create account'}
                   </button>
                 )}
               </div>

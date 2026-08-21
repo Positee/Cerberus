@@ -1,0 +1,1 @@
+ALTER TYPE "public"."schedule_kind" ADD VALUE 'reminder' BEFORE 'task';

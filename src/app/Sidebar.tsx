@@ -1,66 +1,44 @@
 import { NavLink } from 'react-router-dom';
-import {
-  Boxes,
-  ChevronsLeft,
-  FileBarChart,
-  LayoutDashboard,
-  LifeBuoy,
-  Plug,
-  ScrollText,
-  Settings,
-  ShieldAlert,
-  type LucideIcon,
-} from 'lucide-react';
-
-type Item = { to: string; label: string; icon: LucideIcon; badge?: number };
-
-const PRIMARY: Item[] = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/reporting', label: 'Reporting', icon: FileBarChart },
-  { to: '/audit', label: 'Audit', icon: ScrollText },
-];
-
-const SECONDARY: Item[] = [
-  { to: '/findings', label: 'Findings', icon: ShieldAlert, badge: 37 },
-  { to: '/assets', label: 'Assets', icon: Boxes },
-  { to: '/integrations', label: 'Integrations', icon: Plug },
-];
-
-const FOOTER: Item[] = [{ to: '/settings', label: 'Settings', icon: Settings }];
+import { ChevronsLeft } from 'lucide-react';
+import { FOOTER_ITEMS, visibleGroups, type NavGroup, type NavItem } from './nav';
 
 type Props = {
   collapsed: boolean;
+  /** True when the account is an organization. It reveals the org modules. */
+  organization: boolean;
   onToggle: () => void;
 };
 
-export default function Sidebar({ collapsed, onToggle }: Props) {
-  const renderGroup = (items: Item[], label?: string) => (
-    <>
-      {label && !collapsed && <p className="nav-group-label">{label}</p>}
-      <ul className="nav-list">
-        {items.map((item) => {
-          const Icon = item.icon;
-          return (
-            <li key={item.to}>
-              <NavLink
-                to={item.to}
-                className={({ isActive }) => (isActive ? 'nav-item current' : 'nav-item')}
-                // The label is the accessible name when the rail is collapsed.
-                title={collapsed ? item.label : undefined}
-              >
-                <Icon size={18} aria-hidden="true" />
-                <span className="nav-text">{item.label}</span>
-                {item.badge !== undefined && (
-                  <span className="nav-badge" aria-label={`${item.badge} open critical`}>
-                    {item.badge}
-                  </span>
-                )}
-              </NavLink>
-            </li>
-          );
-        })}
-      </ul>
-    </>
+export default function Sidebar({ collapsed, organization, onToggle }: Props) {
+  const groups = visibleGroups(organization);
+
+  const renderItem = (item: NavItem) => {
+    const Icon = item.icon;
+    return (
+      <li key={item.to}>
+        <NavLink
+          to={item.to}
+          className={({ isActive }) => (isActive ? 'nav-item current' : 'nav-item')}
+          // The label is the accessible name when the rail is collapsed.
+          title={collapsed ? item.label : undefined}
+        >
+          <Icon size={18} aria-hidden="true" />
+          <span className="nav-text">{item.label}</span>
+          {item.badge !== undefined && (
+            <span className="nav-badge" aria-label={`${item.badge} open critical`}>
+              {item.badge}
+            </span>
+          )}
+        </NavLink>
+      </li>
+    );
+  };
+
+  const renderGroup = (group: NavGroup, key: string) => (
+    <div className="nav-group" key={key}>
+      {group.label && !collapsed && <p className="nav-group-label">{group.label}</p>}
+      <ul className="nav-list">{group.items.map(renderItem)}</ul>
+    </div>
   );
 
   return (
@@ -71,20 +49,11 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
       </NavLink>
 
       <div className="sidebar-scroll">
-        {renderGroup(PRIMARY)}
-        {renderGroup(SECONDARY, 'Monitor')}
+        {groups.map((group, index) => renderGroup(group, group.label ?? `group-${index}`))}
       </div>
 
       <div className="sidebar-foot">
-        {renderGroup(FOOTER)}
-        <ul className="nav-list">
-          <li>
-            <button type="button" className="nav-item" title={collapsed ? 'Help' : undefined}>
-              <LifeBuoy size={18} aria-hidden="true" />
-              <span className="nav-text">Help</span>
-            </button>
-          </li>
-        </ul>
+        {renderGroup({ items: FOOTER_ITEMS }, 'footer')}
         <button
           type="button"
           className="collapse-toggle"

@@ -1,15 +1,9 @@
 /** Placeholder data. Replace each export when the API lands. */
 
-export type Severity = 'critical' | 'high' | 'medium' | 'low';
-
-export const SEVERITY_ORDER: Severity[] = ['critical', 'high', 'medium', 'low'];
-
-export const SEVERITY_LABEL: Record<Severity, string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-};
+// Severity moved to shared/, because the alerting API stores it too. These
+// re-exports keep the existing pages importing from one place.
+export { SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from '../../shared/severity';
+import type { Severity } from '../../shared/severity';
 
 export const kpis = [
   { id: 'open', label: 'Open findings', value: '1,284', delta: -8.4, good: true, note: 'vs previous 30 days' },
