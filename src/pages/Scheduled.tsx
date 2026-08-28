@@ -116,6 +116,13 @@ export default function Scheduled({ session }: { session: Session }) {
     }
   }, []);
 
+  // The c shortcut. The shell raises this, and the page decides what it makes.
+  useEffect(() => {
+    const onCreate = () => setComposing(true);
+    window.addEventListener('cerberus:create', onCreate);
+    return () => window.removeEventListener('cerberus:create', onCreate);
+  }, []);
+
   useEffect(() => {
     void load();
     workspaceMembers()

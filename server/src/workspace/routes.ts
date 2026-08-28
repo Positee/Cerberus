@@ -5,7 +5,9 @@ import { db } from '../db/client.js';
 import { memberships, organizations, users } from '../db/schema.js';
 import { publicOrganizationColumns, toPublicOrganization } from '../auth/present.js';
 import { readSession } from '../auth/session.js';
+import { record } from '../audit/record.js';
 import { fail, fieldErrors } from '../http/errors.js';
+import { notifyLater } from '../notifications/notify.js';
 import type { SessionPayload, WorkspaceMember } from '../../../shared/api.js';
 import { SLUG_MAX_LENGTH, SLUG_MIN_LENGTH, SLUG_PATTERN } from '../../../shared/api.js';
 import { can, type Permission } from '../../../shared/permissions.js';
@@ -167,6 +169,14 @@ export default async function workspaceRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(404).send(fail('not_found', 'That workspace is gone.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'workspace.update',
+      resource: String(session.organization.name),
+    });
+
     return reply.send(toPublicOrganization(row));
   });
 
@@ -195,6 +205,25 @@ export default async function workspaceRoutes(app: FastifyInstance) {
       .where(eq(memberships.id, id))
       .returning({ id: memberships.id, role: memberships.role });
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'member.role.change',
+      resource: String(parsed.data.role),
+    });
+
+    notifyLater(
+      {
+        organizationId: session.organization.id,
+        source: 'workspace',
+        title: `${session.user.fullName} changed a role`,
+        body: `Somebody is now ${parsed.data.role}.`,
+        href: '/workspace',
+      },
+      request.log,
+    );
+
     return reply.send(rows[0]);
   });
 
@@ -218,6 +247,25 @@ export default async function workspaceRoutes(app: FastifyInstance) {
     }
 
     await db.delete(memberships).where(eq(memberships.id, id));
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'member.remove',
+      resource: String('Membership ' + id),
+    });
+
+    notifyLater(
+      {
+        organizationId: session.organization.id,
+        source: 'workspace',
+        title: `${session.user.fullName} removed a member`,
+        body: null,
+        href: '/workspace',
+      },
+      request.log,
+    );
+
     return reply.code(204).send();
   });
 }

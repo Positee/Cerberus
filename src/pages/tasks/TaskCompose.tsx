@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { X } from 'lucide-react';
-import { ApiFailure, createTask, workspaceMembers } from '../../app/api';
+import { Paperclip, UploadCloud, X } from 'lucide-react';
+import { ApiFailure, createTask, uploadTaskAttachment, workspaceMembers } from '../../app/api';
 import type { WorkspaceMember } from '../../../shared/api';
 import {
   PRIORITY_LABEL,
@@ -8,6 +8,8 @@ import {
   STATUS_CATEGORY,
   STATUS_LABEL,
   STATUS_ORDER,
+  TASK_ATTACHMENT_ACCEPT,
+  TASK_ATTACHMENT_MAX_BYTES,
   type TaskPriority,
   type TaskStatus,
 } from '../../../shared/tasks';
@@ -29,6 +31,7 @@ export default function TaskCompose({ onClose, onCreated }: { onClose: () => voi
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [linkedIssueId, setLinkedIssueId] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,15 +51,25 @@ export default function TaskCompose({ onClose, onCreated }: { onClose: () => voi
   }, [onClose]);
 
   const datesWrong = Boolean(startDate && dueDate && startDate > dueDate);
+  const oversized = files.find((file) => file.size > TASK_ATTACHMENT_MAX_BYTES);
+
+  function addFiles(list: FileList | null) {
+    if (!list) return;
+    setFiles((current) => [...current, ...Array.from(list)]);
+  }
 
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!title.trim() || datesWrong) return;
+    if (oversized) {
+      setError(`${oversized.name} is larger than 10 MB.`);
+      return;
+    }
 
     setBusy(true);
     setError(null);
     try {
-      await createTask({
+      const created = await createTask({
         title: title.trim(),
         description: description.trim() || undefined,
         status,
@@ -66,6 +79,7 @@ export default function TaskCompose({ onClose, onCreated }: { onClose: () => voi
         dueDate: dueDate ? new Date(dueDate).toISOString() : null,
         linkedIssueId: linkedIssueId.trim() || null,
       });
+      await Promise.all(files.map((file) => uploadTaskAttachment(created.id, file)));
       onCreated();
       onClose();
     } catch (caught) {
@@ -175,6 +189,44 @@ export default function TaskCompose({ onClose, onCreated }: { onClose: () => voi
               The due date comes before the start date.
             </p>
           )}
+
+          <section className="task-upload-card">
+            <div>
+              <strong>Attachments</strong>
+              <p>Images, PDFs, docs, spreadsheets, zip files. Up to 10 MB each.</p>
+            </div>
+            <label className="task-upload-button">
+              <UploadCloud size={16} aria-hidden="true" />
+              Upload files
+              <input
+                type="file"
+                multiple
+                accept={TASK_ATTACHMENT_ACCEPT}
+                onChange={(event) => {
+                  addFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
+            </label>
+            {files.length > 0 && (
+              <ul className="task-file-list">
+                {files.map((file, index) => (
+                  <li key={`${file.name}-${file.lastModified}-${index}`}>
+                    <Paperclip size={14} aria-hidden="true" />
+                    <span>{file.name}</span>
+                    <small>{Math.max(1, Math.round(file.size / 1024))} KB</small>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${file.name}`}
+                      onClick={() => setFiles((current) => current.filter((_, i) => i !== index))}
+                    >
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
           <p className="field-hint">
             This task will sit in <strong>{STATUS_LABEL[status]}</strong>, which counts as{' '}

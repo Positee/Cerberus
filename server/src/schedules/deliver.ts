@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
+import { notify } from '../notifications/notify.js';
 import { contactPoints, notifications } from '../db/schema.js';
 import type { IntegrationType } from '../../../shared/alerting.js';
 
@@ -115,24 +116,6 @@ export async function deliver(
 }
 
 /** Writes the bell entry. This runs whether or not delivery worked. */
-export async function notify(input: {
-  organizationId: string;
-  userId?: string | null;
-  source: 'schedule' | 'alert' | 'task' | 'workspace';
-  title: string;
-  body?: string | null;
-  href?: string | null;
-}): Promise<void> {
-  await db.insert(notifications).values({
-    organizationId: input.organizationId,
-    userId: input.userId ?? null,
-    source: input.source,
-    title: input.title,
-    body: input.body ?? null,
-    href: input.href ?? null,
-  });
-}
-
 /** Turns delivery results into the one line a run row records. */
 export function summarise(results: DeliveryResult[]): string | null {
   if (results.length === 0) return null;
@@ -146,3 +129,6 @@ export function summarise(results: DeliveryResult[]): string | null {
 
   return parts.join('; ');
 }
+
+// Kept as a re-export, because the schedule runner already imports it here.
+export { notify };

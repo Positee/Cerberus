@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { db } from '../db/client.js';
 import { announcementReads, announcements, notifications } from '../db/schema.js';
 import { readSession } from '../auth/session.js';
+import { record } from '../audit/record.js';
 import { fail } from '../http/errors.js';
 
 /**
@@ -115,6 +116,14 @@ export default async function notificationRoutes(app: FastifyInstance) {
         .onConflictDoNothing();
     }
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'announcement.read',
+      resource: String('What is new'),
+    });
+
     return reply.code(204).send();
   });
 
@@ -135,6 +144,14 @@ export default async function notificationRoutes(app: FastifyInstance) {
       .update(notifications)
       .set({ readAt: new Date() })
       .where(body.id ? and(scope, eq(notifications.id, body.id)) : scope);
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'notification.read',
+      resource: String('The bell'),
+    });
 
     return reply.code(204).send();
   });

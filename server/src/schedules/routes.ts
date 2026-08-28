@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { db } from '../db/client.js';
 import { organizations, scheduleRuns, schedules, tasks } from '../db/schema.js';
 import { readSession } from '../auth/session.js';
+import { record, recordDenied } from '../audit/record.js';
 import { fail, fieldErrors } from '../http/errors.js';
+import { needsPlan, withinLimit } from '../http/plan.js';
 import type { SessionPayload } from '../../../shared/api.js';
 import { can, type Permission } from '../../../shared/permissions.js';
 import { PRIORITY_ORDER, STATUS_ORDER, type TaskPriority, type TaskStatus } from '../../../shared/tasks.js';
@@ -40,9 +42,24 @@ async function requireUser(request: FastifyRequest, reply: FastifyReply): Promis
   return session;
 }
 
-async function allow(reply: FastifyReply, session: SessionPayload, permission: Permission): Promise<boolean> {
+async function allow(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  session: SessionPayload,
+  permission: Permission,
+): Promise<boolean> {
   const context = { role: session.role, kind: session.organization.kind, policy: session.organization.policy };
   if (can(permission, context)) return true;
+
+  // A refusal is the row an auditor most wants, so it is written too.
+  recordDenied(request, {
+    organizationId: session.organization.id,
+    actorUserId: session.user.id,
+    actor: session.user.email,
+    action: 'permission.denied',
+    resource: permission,
+  });
+
   await reply.code(403).send(fail('unauthorized', 'Your role does not allow that.'));
   return false;
 }
@@ -102,7 +119,7 @@ export default async function scheduleRoutes(app: FastifyInstance) {
   app.get('/api/schedules', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     const rows = await db
       .select()
@@ -146,7 +163,9 @@ export default async function scheduleRoutes(app: FastifyInstance) {
   app.post('/api/schedules', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
+    if (!(await needsPlan(request, reply, session, 'pro', 'Scheduled'))) return;
+    if (!(await withinLimit(request, reply, session, 'schedules'))) return;
 
     const parsed = scheduleSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -177,13 +196,21 @@ export default async function scheduleRoutes(app: FastifyInstance) {
 
     if (!row) return reply.code(500).send(fail('server_error', 'The schedule was not written.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'schedule.create',
+      resource: String(parsed.data.name),
+    });
+
     return reply.code(201).send(shape(row, [], 'TSK'));
   });
 
   app.patch('/api/schedules/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
 
     const { id } = request.params as { id: string };
     const parsed = scheduleSchema.partial().safeParse(request.body);
@@ -247,18 +274,42 @@ export default async function scheduleRoutes(app: FastifyInstance) {
 
     if (!row) return reply.code(404).send(fail('not_found', 'That schedule is gone.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'schedule.update',
+      resource: String(before.name),
+    });
+
     return reply.send(shape(row, [], 'TSK'));
   });
 
   app.delete('/api/schedules/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
 
     const { id } = request.params as { id: string };
+
+    // Read the name first. After the delete there is nothing left to name.
+    const [doomed] = await db
+      .select({ name: schedules.name })
+      .from(schedules)
+      .where(and(eq(schedules.id, id), eq(schedules.organizationId, session.organization.id)))
+      .limit(1);
+
     await db
       .delete(schedules)
       .where(and(eq(schedules.id, id), eq(schedules.organizationId, session.organization.id)));
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'schedule.delete',
+      resource: doomed?.name ?? id,
+    });
 
     return reply.code(204).send();
   });
@@ -267,12 +318,12 @@ export default async function scheduleRoutes(app: FastifyInstance) {
   app.post('/api/schedules/:id/run', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
 
     const { id } = request.params as { id: string };
 
     const [row] = await db
-      .select({ id: schedules.id })
+      .select({ id: schedules.id, name: schedules.name })
       .from(schedules)
       .where(and(eq(schedules.id, id), eq(schedules.organizationId, session.organization.id)))
       .limit(1);
@@ -282,6 +333,14 @@ export default async function scheduleRoutes(app: FastifyInstance) {
     // Pulling the time back makes it due, then the ordinary runner handles it.
     await db.update(schedules).set({ nextRunAt: new Date(Date.now() - 1000) }).where(eq(schedules.id, id));
     await runDue(app.log);
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'schedule.run',
+      resource: row.name,
+    });
 
     return reply.code(202).send({ ran: true });
   });

@@ -63,7 +63,7 @@ const MENU: MenuItem[][] = [
   ],
   [
     { id: 'tokens', label: 'API keys and tokens', icon: KeyRound, to: '/settings' },
-    { id: 'invite', label: 'Invite teammates', icon: UserPlus, to: '/workspace' },
+    { id: 'invite', label: 'Invite teammates', icon: UserPlus, to: '/invites' },
   ],
   [{ id: 'shortcuts', label: 'Keyboard shortcuts', icon: Keyboard, hint: '?' }],
   [{ id: 'logout', label: 'Log out', icon: LogOut, danger: true }],
@@ -306,9 +306,10 @@ type Props = {
   subtitle: string;
   session: Session;
   onLogout: () => void;
+  onShowShortcuts: () => void;
 };
 
-export default function TopBar({ title, subtitle, session, onLogout }: Props) {
+export default function TopBar({ title, subtitle, session, onLogout, onShowShortcuts }: Props) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -399,6 +400,7 @@ export default function TopBar({ title, subtitle, session, onLogout }: Props) {
                         onClick={() => {
                           setOpen(false);
                           if (item.id === 'logout') onLogout();
+                          else if (item.id === 'shortcuts') onShowShortcuts();
                           else if (item.to) navigate(item.to);
                         }}
                       >

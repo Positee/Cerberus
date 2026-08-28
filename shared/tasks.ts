@@ -171,6 +171,29 @@ export type TaskAttachment = {
   createdAt: string;
 };
 
+export const TASK_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+export const TASK_ATTACHMENT_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'application/pdf',
+  'text/plain',
+  'text/csv',
+  'application/json',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/zip',
+  'application/octet-stream',
+] as const;
+
+export const TASK_ATTACHMENT_ACCEPT = TASK_ATTACHMENT_TYPES.join(',');
+
 /**
  * One entry in the task's timeline.
  *

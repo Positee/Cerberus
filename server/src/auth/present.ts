@@ -1,4 +1,5 @@
 import { organizations, users } from '../db/schema.js';
+import type { BillingPeriod, Plan } from '../../../shared/plans.js';
 import type { PublicOrganization, PublicUser } from '../../../shared/api.js';
 import { FLAT_POLICY } from '../../../shared/permissions.js';
 
@@ -29,6 +30,9 @@ export const publicOrganizationColumns = {
   membersCanInvite: organizations.membersCanInvite,
   membersCanCreateProjects: organizations.membersCanCreateProjects,
   membersCanManageAlerts: organizations.membersCanManageAlerts,
+  plan: organizations.plan,
+  billingPeriod: organizations.billingPeriod,
+  planSince: organizations.planSince,
 };
 
 type UserRow = {
@@ -50,6 +54,9 @@ type OrganizationRow = {
   membersCanInvite: boolean;
   membersCanCreateProjects: boolean;
   membersCanManageAlerts: boolean;
+  plan: Plan;
+  billingPeriod: BillingPeriod;
+  planSince: Date;
 };
 
 export function toPublicUser(row: UserRow): PublicUser {
@@ -71,6 +78,9 @@ export function toPublicOrganization(row: OrganizationRow): PublicOrganization {
     kind: row.kind,
     teamSize: row.teamSize,
     useCase: row.useCase,
+    plan: row.plan,
+    billingPeriod: row.billingPeriod,
+    planSince: row.planSince.toISOString(),
     // A personal workspace is flat, so it reports every switch as on and the
     // permission rule never has to know which kind it is looking at.
     policy:

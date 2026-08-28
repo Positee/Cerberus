@@ -5,6 +5,8 @@
  * here breaks the build on whichever side did not follow.
  */
 
+import type { BillingPeriod, Plan } from './plans.js';
+
 export type AccountType = 'personal' | 'organization';
 export type MemberRole = 'owner' | 'admin' | 'member' | 'viewer';
 
@@ -42,6 +44,10 @@ export type PublicOrganization = {
   teamSize: string | null;
   useCase: string | null;
   policy: WorkspacePolicy;
+  /** What the workspace pays for. See shared/plans.ts. */
+  plan: Plan;
+  billingPeriod: BillingPeriod;
+  planSince: string;
 };
 
 /** One row of the membership list. */
@@ -180,6 +186,8 @@ export type ApiError = {
       | 'email_taken'
       | 'invalid_credentials'
       | 'unauthorized'
+      /** The workspace plan does not reach what the request needs. */
+      | 'plan_required'
       | 'not_found'
       | 'server_error';
     message: string;

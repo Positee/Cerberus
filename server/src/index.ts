@@ -6,15 +6,38 @@ import profileRoutes from './profile/routes.js';
 import workspaceRoutes from './workspace/routes.js';
 import invitationRoutes, { purgeExpiredInvitations } from './workspace/invitations.js';
 import alertingRoutes from './alerting/routes.js';
+import billingRoutes from './billing/routes.js';
+import auditRoutes from './audit/routes.js';
 import taskRoutes from './tasks/routes.js';
 import scheduleRoutes from './schedules/routes.js';
 import notificationRoutes from './notifications/routes.js';
+import argusRoutes from './argus/routes.js';
+import inboxRoutes from './inbox/routes.js';
 import { startRunner } from './schedules/runner.js';
+import { startProber } from './argus/prober.js';
 import { purgeExpiredSessions } from './auth/session.js';
+import { purgeStaleAttempts } from './auth/lockout.js';
 import { sql } from './db/client.js';
 import { fail } from './http/errors.js';
 import { env, isProduction } from './env.js';
 import { AVATAR_TYPES } from '../../shared/api.js';
+import { TASK_ATTACHMENT_TYPES } from '../../shared/tasks.js';
+
+/**
+ * The attachment types that need a raw parser of their own.
+ *
+ * Two are left out for different reasons. An avatar type already has a parser
+ * below, and registering it twice throws at boot.
+ *
+ * application/json is the important one. A person may attach a .json file to a
+ * task, so it belongs in TASK_ATTACHMENT_TYPES. It must never reach
+ * addContentTypeParser, because that replaces the parser Fastify uses for every
+ * JSON request in the API. Doing so hands each route a raw Buffer, so
+ * request.body arrives with no fields and every write fails validation.
+ */
+const TASK_UPLOAD_TYPES = TASK_ATTACHMENT_TYPES.filter(
+  (type) => type !== 'application/json' && !(AVATAR_TYPES as readonly string[]).includes(type),
+);
 
 const app = Fastify({
   logger: isProduction ? true : { transport: { target: 'pino-pretty' } },
@@ -68,6 +91,10 @@ app.addContentTypeParser([...AVATAR_TYPES], { parseAs: 'buffer' }, (_request, bo
   done(null, body);
 });
 
+app.addContentTypeParser(TASK_UPLOAD_TYPES, { parseAs: 'buffer' }, (_request, body, done) => {
+  done(null, body);
+});
+
 app.get('/api/health', async () => {
   await sql`select 1`;
   return { status: 'ok', time: new Date().toISOString() };
@@ -78,22 +105,33 @@ await app.register(profileRoutes);
 await app.register(workspaceRoutes);
 await app.register(invitationRoutes);
 await app.register(alertingRoutes);
+await app.register(billingRoutes);
+await app.register(auditRoutes);
 await app.register(taskRoutes);
 await app.register(scheduleRoutes);
 await app.register(notificationRoutes);
+await app.register(argusRoutes);
+await app.register(inboxRoutes);
 
 let stopRunner: (() => void) | null = null;
+let stopProber: (() => void) | null = null;
 
 async function start() {
   try {
     const removed = await purgeExpiredSessions();
     if (removed > 0) app.log.info(`Removed ${removed} expired sessions.`);
 
+    const cold = await purgeStaleAttempts();
+    if (cold > 0) app.log.info(`Removed ${cold} stale sign in records.`);
+
     const stale = await purgeExpiredInvitations();
     if (stale > 0) app.log.info(`Removed ${stale} expired invitations.`);
 
     stopRunner = startRunner(app.log);
     app.log.info('Schedule runner started.');
+
+    stopProber = startProber(app.log);
+    app.log.info('Argus prober started.');
 
     await app.listen({ port: env.PORT, host: '0.0.0.0' });
   } catch (error) {
@@ -106,6 +144,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     app.log.info('Shutting down.');
     stopRunner?.();
+    stopProber?.();
     await app.close();
     await sql.end({ timeout: 5 });
     process.exit(0);

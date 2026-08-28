@@ -16,9 +16,16 @@ import NotificationPolicies from './pages/alerting/NotificationPolicies';
 import Tasks from './pages/tasks/Tasks';
 import Projects from './pages/tasks/Projects';
 import Scheduled from './pages/Scheduled';
+import Argus from './pages/argus/Argus';
+import Inbox from './pages/inbox/Inbox';
 import Help from './pages/Help';
+import Invites from './pages/Invites';
+import Usage from './pages/Usage';
+import Locked from './pages/Locked';
+import Join from './pages/Join';
 import { ALL_ITEMS } from './app/nav';
 import { isOrganization, useSession } from './app/session';
+import { planForModule, planReaches } from '../shared/plans';
 
 /**
  * Routes and the session guard.
@@ -32,7 +39,6 @@ import { isOrganization, useSession } from './app/session';
 const PAGES: Record<string, ReactElement> = {
   '/dashboard': <Dashboard />,
   '/reporting': <Reporting />,
-  '/audit': <Audit />,
 };
 
 /** Held while the first /api/auth/me call runs. It stops the gate flashing. */
@@ -72,13 +78,22 @@ export default function App() {
     if (path === '/tasks') return <Tasks session={session} />;
     if (path === '/projects') return <Projects session={session} />;
     if (path === '/scheduled') return <Scheduled session={session} />;
+    if (path === '/argus') return <Argus session={session} />;
+    if (path === '/inbox') return <Inbox session={session} />;
+    if (path === '/audit') return <Audit session={session} />;
     if (path === '/help') return <Help />;
+    if (path === '/invites') return <Invites session={session} />;
+    if (path === '/usage') return <Usage session={session} />;
 
     return PAGES[path] ?? <Placeholder title={label} />;
   };
 
   return (
     <Routes>
+      {/* Outside the shell. Whoever opens a link may not be signed in, and may
+          belong to no workspace yet. */}
+      <Route path="/join/:token" element={<Join signedIn={Boolean(session)} />} />
+
       <Route
         path="/login"
         element={session ? <Navigate to="/dashboard" replace /> : <AuthPage onAuthenticated={signIn} />}
@@ -94,6 +109,8 @@ export default function App() {
             element={
               (item.orgOnly && !organization) || (item.personalOnly && organization) ? (
                 <Navigate to="/dashboard" replace />
+              ) : session && !planReaches(session.organization.plan, planForModule(item.to)) ? (
+                <Locked label={item.label} subtitle={item.subtitle} needed={planForModule(item.to)} />
               ) : (
                 pageFor(item.to, item.label)
               )

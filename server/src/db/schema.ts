@@ -32,6 +32,8 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 
 export const orgKind = pgEnum('org_kind', ['personal', 'organization']);
 export const memberRole = pgEnum('member_role', ['owner', 'admin', 'member', 'viewer']);
+export const planTier = pgEnum('plan_tier', ['free', 'pro', 'enterprise']);
+export const billingPeriod = pgEnum('billing_period', ['monthly', 'yearly']);
 
 export const organizations = pgTable(
   'organizations',
@@ -49,6 +51,13 @@ export const organizations = pgTable(
     membersCanInvite: boolean('members_can_invite').notNull().default(false),
     membersCanCreateProjects: boolean('members_can_create_projects').notNull().default(true),
     membersCanManageAlerts: boolean('members_can_manage_alerts').notNull().default(false),
+    /**
+     * What this workspace pays for. See shared/plans.ts for what each unlocks.
+     * Billing is not connected, so this changes in the database.
+     */
+    plan: planTier('plan').notNull().default('free'),
+    billingPeriod: billingPeriod('billing_period').notNull().default('monthly'),
+    planSince: timestamp('plan_since', { withTimezone: true }).notNull().defaultNow(),
     /** The prefix on every task ref, such as TSK in TSK-142. */
     taskPrefix: text('task_prefix').notNull().default('TSK'),
     /** The next number this workspace hands out to a task. */
@@ -592,6 +601,103 @@ export const schedulesRelations = relations(schedules, ({ many }) => ({
   runs: many(scheduleRuns),
 }));
 
+/* --------------------------------------------------------------- argus -- */
+
+export const monitorStatus = pgEnum('monitor_status', ['up', 'down', 'degraded', 'pending']);
+
+/**
+ * A monitor tracks one endpoint.
+ *
+ * It holds the probe configuration, the current state, and the timing. The
+ * prober reads due monitors, fires an HTTP request, records the heartbeat,
+ * and updates the state. A contact point tells the prober where to send
+ * alerts when the state changes.
+ */
+export const monitors = pgTable(
+  'monitors',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    url: text('url').notNull(),
+    method: text('method').notNull().default('GET'),
+    headers: jsonb('headers'),
+    body: text('body'),
+    bodyEncoding: text('body_encoding').notNull().default('json'),
+    /** Array of status codes considered successful. Defaults to [200-299]. */
+    expectedStatusCodes: jsonb('expected_status_codes').notNull().default([200, 201, 202, 203, 204, 205, 206, 207, 208, 226]),
+    intervalSeconds: integer('interval_seconds').notNull().default(60),
+    timeoutSeconds: integer('timeout_seconds').notNull().default(30),
+    retries: integer('retries').notNull().default(3),
+    retryIntervalSeconds: integer('retry_interval_seconds').notNull().default(60),
+    /** Group name for clustering monitors in the sidebar. */
+    monitorGroup: text('monitor_group'),
+    certExpiryCheck: boolean('cert_expiry_check').notNull().default(true),
+    upsideDownMode: boolean('upside_down_mode').notNull().default(false),
+    maxRedirects: integer('max_redirects').notNull().default(10),
+    active: boolean('active').notNull().default(true),
+    tags: jsonb('tags').notNull().default([]),
+    /** Where to send alerts on state change. Uses the alerting contact points. */
+    contactPointId: uuid('contact_point_id').references(() => contactPoints.id, {
+      onDelete: 'set null',
+    }),
+    /** The last known status. Starts as pending. */
+    currentStatus: monitorStatus('current_status').notNull().default('pending'),
+    /** ISO timestamp of the last successful probe. */
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+    /** When the next probe should fire. */
+    nextCheckAt: timestamp('next_check_at', { withTimezone: true }),
+    checkCount: integer('check_count').notNull().default(0),
+    upCount: integer('up_count').notNull().default(0),
+    /** Consecutive down checks. Reset to 0 on up. */
+    consecutiveDown: integer('consecutive_down').notNull().default(0),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('monitors_org_idx').on(table.organizationId),
+    index('monitors_due_idx').on(table.active, table.nextCheckAt),
+  ],
+);
+
+/**
+ * One probe result.
+ *
+ * Heartbeats are append-only. The prober writes a row after every check.
+ * The dashboard reads the last N for the response time chart and the uptime
+ * percentage.
+ */
+export const heartbeats = pgTable(
+  'heartbeats',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    monitorId: uuid('monitor_id')
+      .notNull()
+      .references(() => monitors.id, { onDelete: 'cascade' }),
+    status: monitorStatus('status').notNull(),
+    responseTimeMs: integer('response_time_ms'),
+    statusCode: integer('status_code'),
+    errorMessage: text('error_message'),
+    /** Days until the TLS cert expires, when available. */
+    certExpiryDays: integer('cert_expiry_days'),
+    checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('heartbeats_monitor_idx').on(table.monitorId, table.checkedAt),
+  ],
+);
+
+export const monitorsRelations = relations(monitors, ({ many }) => ({
+  heartbeats: many(heartbeats),
+}));
+
+export const heartbeatsRelations = relations(heartbeats, ({ one }) => ({
+  monitor: one(monitors, { fields: [heartbeats.monitorId], references: [monitors.id] }),
+}));
+
 /* ---------------------------------------------------------- notifications -- */
 
 export const notificationSource = pgEnum('notification_source', ['schedule', 'alert', 'task', 'workspace']);
@@ -677,4 +783,166 @@ export const announcementReads = pgTable(
     uniqueIndex('announcement_reads_key').on(table.announcementId, table.userId),
     index('announcement_reads_user_idx').on(table.userId),
   ],
+);
+
+/* ------------------------------------------------------------------ inbox -- */
+
+/**
+ * A conversation is a direct message thread between two people in the same
+ * organization. There is at most one conversation between any pair.
+ */
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: uuid('id').notNull().primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('conversations_org_idx').on(table.organizationId),
+  ],
+);
+
+/**
+ * Each person in the conversation gets a row. The last_read_at field drives
+ * the unread badge.
+ */
+export const conversationParticipants = pgTable(
+  'conversation_participants',
+  {
+    id: uuid('id').notNull().primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    lastReadAt: timestamp('last_read_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('conv_participants_conv_user_idx').on(table.conversationId, table.userId),
+    index('conv_participants_user_idx').on(table.userId),
+  ],
+);
+
+/**
+ * One message in a conversation. reply_to_id supports quoting a prior message.
+ */
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').notNull().primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    senderId: uuid('sender_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    replyToId: uuid('reply_to_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    editedAt: timestamp('edited_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('messages_conversation_idx').on(table.conversationId),
+    index('messages_sender_idx').on(table.senderId),
+  ],
+);
+
+export const conversationsRelations = relations(conversations, ({ many }) => ({
+  participants: many(conversationParticipants),
+  messages: many(messages),
+}));
+
+export const conversationParticipantsRelations = relations(conversationParticipants, ({ one }) => ({
+  conversation: one(conversations, {
+    fields: [conversationParticipants.conversationId],
+    references: [conversations.id],
+  }),
+  user: one(users, {
+    fields: [conversationParticipants.userId],
+    references: [users.id],
+  }),
+}));
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  conversation: one(conversations, {
+    fields: [messages.conversationId],
+    references: [conversations.id],
+  }),
+  sender: one(users, {
+    fields: [messages.senderId],
+    references: [users.id],
+  }),
+}));
+
+/* ----------------------------------------------------------------- audit -- */
+
+export const auditResult = pgEnum('audit_result', ['allowed', 'denied']);
+
+/**
+ * One row for every action anybody takes.
+ *
+ * The actor is kept twice on purpose. actorUserId links to the person while
+ * they exist, and actorLabel holds the email as it read at the time. Deleting
+ * an account must not blank the history of what that account did, and a failed
+ * sign in has a label with no user behind it at all.
+ */
+export const auditEvents = pgTable(
+  'audit_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** The email as it read when this happened. Never rewritten. */
+    actorLabel: text('actor_label').notNull(),
+    action: text('action').notNull(),
+    /** What was acted on, in words a person can read without a lookup. */
+    resource: text('resource').notNull(),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    result: auditResult('result').notNull().default('allowed'),
+    /** Anything worth keeping that does not fit a column. Never a secret. */
+    detail: jsonb('detail'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('audit_org_time_idx').on(table.organizationId, table.createdAt),
+    index('audit_action_idx').on(table.organizationId, table.action),
+    index('audit_result_idx').on(table.organizationId, table.result),
+    index('audit_actor_idx').on(table.organizationId, table.actorLabel),
+  ],
+);
+
+/* ---------------------------------------------------------- login guard -- */
+
+/**
+ * Failed sign in attempts, keyed by email address.
+ *
+ * A row exists for any address somebody tried, whether or not it belongs to an
+ * account. Treating a real and an unknown address the same is what stops this
+ * table telling an attacker which emails exist.
+ *
+ * Locking by address means somebody can lock a colleague out by guessing at
+ * their email on purpose. That is the accepted trade for stopping a password
+ * guessing run, and the audit trail records every refusal so the abuse shows.
+ */
+export const loginAttempts = pgTable(
+  'login_attempts',
+  {
+    email: text('email').primaryKey(),
+    /** Consecutive failures since the last success or lock. */
+    failures: integer('failures').notNull().default(0),
+    /** How many times this address has been locked. It drives the ladder. */
+    lockCount: integer('lock_count').notNull().default(0),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    lastFailedAt: timestamp('last_failed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('login_attempts_locked_idx').on(table.lockedUntil)],
 );

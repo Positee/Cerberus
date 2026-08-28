@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNull, sql as raw } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, sql as raw } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/client.js';
@@ -15,14 +15,20 @@ import {
   users,
 } from '../db/schema.js';
 import { readSession } from '../auth/session.js';
+import { record as auditRecord, recordDenied as auditRecordDenied } from '../audit/record.js';
+import { notifyLater } from '../notifications/notify.js';
 import { fail, fieldErrors } from '../http/errors.js';
+import { needsPlan, withinLimit } from '../http/plan.js';
 import type { SessionPayload } from '../../../shared/api.js';
 import { can, type Permission } from '../../../shared/permissions.js';
 import {
   KEY_PATTERN,
   PRIORITY_ORDER,
   STATUS_ORDER,
+  TASK_ATTACHMENT_MAX_BYTES,
+  TASK_ATTACHMENT_TYPES,
   type Task,
+  type TaskAttachment,
   type TaskEvent,
   type TaskPriority,
   type TaskStatus,
@@ -81,6 +87,8 @@ const updateTaskSchema = createTaskSchema.partial().omit({ parentId: true }).ext
   remindAt: z.string().datetime().nullable().optional(),
 });
 
+const allowedAttachmentTypes = new Set<string>(TASK_ATTACHMENT_TYPES);
+
 async function requireUser(request: FastifyRequest, reply: FastifyReply): Promise<SessionPayload | null> {
   const session = await readSession(request);
   if (!session) {
@@ -90,9 +98,24 @@ async function requireUser(request: FastifyRequest, reply: FastifyReply): Promis
   return session;
 }
 
-async function allow(reply: FastifyReply, session: SessionPayload, permission: Permission): Promise<boolean> {
+async function allow(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  session: SessionPayload,
+  permission: Permission,
+): Promise<boolean> {
   const context = { role: session.role, kind: session.organization.kind, policy: session.organization.policy };
   if (can(permission, context)) return true;
+
+  // A refusal is the row an auditor most wants, so it is written too.
+  auditRecordDenied(request, {
+    organizationId: session.organization.id,
+    actorUserId: session.user.id,
+    actor: session.user.email,
+    action: 'permission.denied',
+    resource: permission,
+  });
+
   await reply.code(403).send(fail('unauthorized', 'Your role does not allow that.'));
   return false;
 }
@@ -109,6 +132,7 @@ async function record(
 }
 
 type TaskRow = typeof tasks.$inferSelect;
+type AttachmentRow = typeof taskAttachments.$inferSelect;
 
 function shapeTask(
   row: TaskRow,
@@ -146,13 +170,41 @@ function shapeTask(
   };
 }
 
+function shapeAttachment(row: AttachmentRow, uploadedBy: TaskAttachment['uploadedBy'] = null): TaskAttachment {
+  return {
+    id: row.id,
+    name: row.name,
+    mimeType: row.mimeType,
+    size: row.size,
+    uploadedBy,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function attachmentName(request: FastifyRequest): string {
+  const raw = request.headers['x-file-name'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value) return 'attachment';
+
+  try {
+    return decodeURIComponent(value).replace(/[\\/\0]/g, '').trim().slice(0, 180) || 'attachment';
+  } catch {
+    return value.replace(/[\\/\0]/g, '').trim().slice(0, 180) || 'attachment';
+  }
+}
+
+function contentDisposition(name: string): string {
+  const fallback = name.replace(/["\\\r\n]/g, '_');
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
 export default async function taskRoutes(app: FastifyInstance) {
   /* ------------------------------------------------------------ projects -- */
 
   app.get('/api/projects', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     const org = session.organization.id;
 
@@ -211,7 +263,8 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.post('/api/projects', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'project.create'))) return;
+    if (!(await allow(request, reply, session, 'project.create'))) return;
+    if (!(await withinLimit(request, reply, session, 'projects'))) return;
 
     const parsed = projectSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -253,6 +306,14 @@ export default async function taskRoutes(app: FastifyInstance) {
 
     if (!created?.project) return reply.code(500).send(fail('server_error', 'The project was not written.'));
 
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'project.create',
+      resource: String(parsed.data.name),
+    });
+
     return reply.code(201).send({
       id: created.project.id,
       name: created.project.name,
@@ -280,7 +341,7 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.post('/api/folders', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'project.create'))) return;
+    if (!(await allow(request, reply, session, 'project.create'))) return;
 
     const parsed = folderSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -298,6 +359,14 @@ export default async function taskRoutes(app: FastifyInstance) {
 
     if (!row) return reply.code(500).send(fail('server_error', 'The folder was not written.'));
 
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'folder.create',
+      resource: String(parsed.data.name),
+    });
+
     return reply.code(201).send({
       id: row.id,
       projectId: row.projectId,
@@ -310,7 +379,7 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.post('/api/lists', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'project.create'))) return;
+    if (!(await allow(request, reply, session, 'project.create'))) return;
 
     const parsed = listSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -332,6 +401,14 @@ export default async function taskRoutes(app: FastifyInstance) {
 
     if (!row) return reply.code(500).send(fail('server_error', 'The list was not written.'));
 
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'list.create',
+      resource: String(parsed.data.name),
+    });
+
     return reply.code(201).send({
       id: row.id,
       projectId: row.projectId,
@@ -347,7 +424,7 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.get('/api/tasks', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     const query = request.query as {
       status?: string;
@@ -369,7 +446,14 @@ export default async function taskRoutes(app: FastifyInstance) {
     if (query.assigneeId === 'none') filters.push(isNull(tasks.assigneeId));
     else if (query.assigneeId) filters.push(eq(tasks.assigneeId, query.assigneeId));
 
-    if (query.archived !== 'true') filters.push(isNull(tasks.archivedAt));
+    /*
+       Three modes rather than two.
+
+       The default hides the archive. "only" is the archive folder, and it must
+       exclude live tasks or the folder would list everything.
+    */
+    if (query.archived === 'only') filters.push(isNotNull(tasks.archivedAt));
+    else if (query.archived !== 'true') filters.push(isNull(tasks.archivedAt));
 
     const prefix = await prefixFor(session.organization.id);
 
@@ -403,7 +487,8 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.post('/api/tasks', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
+    if (!(await needsPlan(request, reply, session, 'pro', 'Tasks'))) return;
 
     const parsed = createTaskSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -479,6 +564,29 @@ export default async function taskRoutes(app: FastifyInstance) {
 
     await record(created.row.id, session.user.id, 'created', null, null);
 
+    // Only the assignee hears, and never about their own doing.
+    if (created.row.assigneeId && created.row.assigneeId !== session.user.id) {
+      notifyLater(
+        {
+          organizationId: session.organization.id,
+          userId: created.row.assigneeId,
+          source: 'task',
+          title: `${session.user.fullName} assigned you ${created.prefix}-${created.row.number}`,
+          body: created.row.title,
+          href: '/tasks',
+        },
+        request.log,
+      );
+    }
+
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'task.create',
+      resource: String(parsed.data.title),
+    });
+
     return reply
       .code(201)
       .send(shapeTask(created.row, created.prefix, null, { subtasks: 0, comments: 0, attachments: 0 }, []));
@@ -487,7 +595,7 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.patch('/api/tasks/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
 
     const { id } = request.params as { id: string };
     const parsed = updateTaskSchema.safeParse(request.body);
@@ -535,6 +643,14 @@ export default async function taskRoutes(app: FastifyInstance) {
     }
 
     const prefix = await prefixFor(session.organization.id);
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'task.update',
+      resource: String('Task ' + id),
+    });
+
     return reply.send(shapeTask(row, prefix, null, { subtasks: 0, comments: 0, attachments: 0 }, []));
   });
 
@@ -542,7 +658,7 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.post('/api/tasks/:id/archive', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
 
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { archived?: boolean };
@@ -552,11 +668,57 @@ export default async function taskRoutes(app: FastifyInstance) {
       .update(tasks)
       .set({ archivedAt: archiving ? new Date() : null, updatedAt: new Date() })
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, session.organization.id)))
-      .returning({ id: tasks.id });
+      .returning({ id: tasks.id, title: tasks.title });
 
     if (!row) return reply.code(404).send(fail('not_found', 'That task is gone.'));
 
     await record(id, session.user.id, archiving ? 'archived' : 'restored', null, null);
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: archiving ? 'task.archive' : 'task.restore',
+      resource: row.title,
+    });
+
+    return reply.code(204).send();
+  });
+
+  /**
+   * Deletes a task for good.
+   *
+   * Only an archived task can go. Archiving is the reversible step, and making
+   * somebody archive first means nothing is destroyed by one stray click.
+   */
+  app.delete('/api/tasks/:id', async (request, reply) => {
+    const session = await requireUser(request, reply);
+    if (!session) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
+
+    const { id } = request.params as { id: string };
+
+    const [doomed] = await db
+      .select({ title: tasks.title, archivedAt: tasks.archivedAt })
+      .from(tasks)
+      .where(and(eq(tasks.id, id), eq(tasks.organizationId, session.organization.id)))
+      .limit(1);
+
+    if (!doomed) return reply.code(404).send(fail('not_found', 'That task is gone.'));
+
+    if (doomed.archivedAt === null) {
+      return reply.code(400).send(fail('invalid_request', 'Archive the task before you delete it.'));
+    }
+
+    await db.delete(tasks).where(and(eq(tasks.id, id), eq(tasks.organizationId, session.organization.id)));
+
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'task.delete',
+      resource: doomed.title,
+    });
+
     return reply.code(204).send();
   });
 
@@ -564,7 +726,7 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.get('/api/tasks/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     const { id } = request.params as { id: string };
 
@@ -613,6 +775,7 @@ export default async function taskRoutes(app: FastifyInstance) {
       .where(eq(taskActivity.taskId, id));
 
     const files = await db.select().from(taskAttachments).where(eq(taskAttachments.taskId, id));
+    const taskFiles = files.filter((file) => file.commentId === null).map((file) => shapeAttachment(file));
 
     // Comments and events share one stream, so the task reads top to bottom.
     const timeline: TimelineEntry[] = [
@@ -626,12 +789,7 @@ export default async function taskRoutes(app: FastifyInstance) {
         attachments: files
           .filter((file) => file.commentId === entry.comment.id)
           .map((file) => ({
-            id: file.id,
-            name: file.name,
-            mimeType: file.mimeType,
-            size: file.size,
-            uploadedBy: null,
-            createdAt: file.createdAt.toISOString(),
+            ...shapeAttachment(file),
           })),
         createdAt: entry.comment.createdAt.toISOString(),
         editedAt: entry.comment.editedAt?.toISOString() ?? null,
@@ -659,13 +817,106 @@ export default async function taskRoutes(app: FastifyInstance) {
       checklist.map((item) => ({ id: item.id, text: item.text, done: item.done, position: item.position })),
     );
 
-    return reply.send({ task, timeline });
+    return reply.send({ task, timeline, attachments: taskFiles });
+  });
+
+  app.post('/api/tasks/:id/attachments', { bodyLimit: TASK_ATTACHMENT_MAX_BYTES }, async (request, reply) => {
+    const session = await requireUser(request, reply);
+    if (!session) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
+
+    const { id } = request.params as { id: string };
+    const query = request.query as { commentId?: string };
+    const body = request.body;
+    const mimeType = String(request.headers['content-type'] ?? '').split(';')[0]?.trim() || 'application/octet-stream';
+
+    if (!Buffer.isBuffer(body)) {
+      return reply.code(400).send(fail('invalid_request', 'Choose a file to upload.'));
+    }
+    if (!allowedAttachmentTypes.has(mimeType)) {
+      return reply.code(415).send(fail('invalid_request', 'Cerberus cannot read that file type.'));
+    }
+    if (body.length === 0) {
+      return reply.code(400).send(fail('invalid_request', 'Choose a file that is not empty.'));
+    }
+
+    const [task] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, id), eq(tasks.organizationId, session.organization.id)))
+      .limit(1);
+
+    if (!task) return reply.code(404).send(fail('not_found', 'That task is gone.'));
+
+    if (query.commentId) {
+      const [comment] = await db
+        .select({ id: taskComments.id })
+        .from(taskComments)
+        .where(and(eq(taskComments.id, query.commentId), eq(taskComments.taskId, id)))
+        .limit(1);
+      if (!comment) return reply.code(404).send(fail('not_found', 'That comment is gone.'));
+    }
+
+    const [file] = await db
+      .insert(taskAttachments)
+      .values({
+        taskId: id,
+        commentId: query.commentId ?? null,
+        name: attachmentName(request),
+        mimeType,
+        size: body.length,
+        data: body,
+        uploadedBy: session.user.id,
+      })
+      .returning();
+
+    if (!file) return reply.code(500).send(fail('server_error', 'The file was not uploaded.'));
+
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'task.attach',
+      resource: String('Task ' + id),
+    });
+
+    return reply.code(201).send(shapeAttachment(file, {
+      id: session.user.id,
+      fullName: session.user.fullName,
+      email: session.user.email,
+    }));
+  });
+
+  app.get('/api/tasks/:id/attachments/:attachmentId', async (request, reply) => {
+    const session = await requireUser(request, reply);
+    if (!session) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
+
+    const { id, attachmentId } = request.params as { id: string; attachmentId: string };
+    const [file] = await db
+      .select({ attachment: taskAttachments })
+      .from(taskAttachments)
+      .innerJoin(tasks, eq(tasks.id, taskAttachments.taskId))
+      .where(and(
+        eq(taskAttachments.id, attachmentId),
+        eq(taskAttachments.taskId, id),
+        eq(tasks.organizationId, session.organization.id),
+      ))
+      .limit(1);
+
+    if (!file) return reply.code(404).send(fail('not_found', 'That file is gone.'));
+
+    return reply
+      .header('content-type', file.attachment.mimeType)
+      .header('content-length', String(file.attachment.size))
+      .header('content-disposition', contentDisposition(file.attachment.name))
+      .send(Buffer.from(file.attachment.data));
   });
 
   app.post('/api/tasks/:id/comments', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'task.manage'))) return;
+    if (!(await allow(request, reply, session, 'task.manage'))) return;
 
     const { id } = request.params as { id: string };
     const parsed = z
@@ -690,6 +941,14 @@ export default async function taskRoutes(app: FastifyInstance) {
       .returning();
 
     if (!row) return reply.code(500).send(fail('server_error', 'The comment was not written.'));
+
+    auditRecord(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'task.comment',
+      resource: String('Task ' + id),
+    });
 
     return reply.code(201).send({
       kind: 'comment',

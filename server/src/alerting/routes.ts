@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { db } from '../db/client.js';
 import { alertRules, contactPoints, notificationPolicies, notificationRoutes } from '../db/schema.js';
 import { readSession } from '../auth/session.js';
+import { record, recordDenied } from '../audit/record.js';
 import { fail, fieldErrors } from '../http/errors.js';
+import { needsPlan, withinLimit } from '../http/plan.js';
 import type { SessionPayload } from '../../../shared/api.js';
 import { can, type Permission } from '../../../shared/permissions.js';
 import { SEVERITY_ORDER } from '../../../shared/severity.js';
@@ -97,7 +99,12 @@ async function requireUser(request: FastifyRequest, reply: FastifyReply): Promis
   return session;
 }
 
-async function allow(reply: FastifyReply, session: SessionPayload, permission: Permission): Promise<boolean> {
+async function allow(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  session: SessionPayload,
+  permission: Permission,
+): Promise<boolean> {
   const context = {
     role: session.role,
     kind: session.organization.kind,
@@ -105,6 +112,15 @@ async function allow(reply: FastifyReply, session: SessionPayload, permission: P
   };
 
   if (can(permission, context)) return true;
+
+  // A refusal is the row an auditor most wants, so it is written too.
+  recordDenied(request, {
+    organizationId: session.organization.id,
+    actorUserId: session.user.id,
+    actor: session.user.email,
+    action: 'permission.denied',
+    resource: permission,
+  });
 
   await reply.code(403).send(fail('unauthorized', 'Your role does not allow that.'));
   return false;
@@ -233,7 +249,7 @@ export default async function alertingRoutes(app: FastifyInstance) {
   app.get('/api/alerting/rules', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     const rows = await db
       .select()
@@ -247,7 +263,8 @@ export default async function alertingRoutes(app: FastifyInstance) {
   app.post('/api/alerting/rules', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
+    if (!(await withinLimit(request, reply, session, 'alertRules'))) return;
 
     const parsed = ruleSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -271,13 +288,21 @@ export default async function alertingRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(500).send(fail('server_error', 'The rule was not written.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'alert.rule.create',
+      resource: parsed.data.name,
+    });
+
     return reply.code(201).send(toRule(row));
   });
 
   app.patch('/api/alerting/rules/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
 
     const { id } = request.params as { id: string };
     const parsed = ruleSchema.partial().safeParse(request.body);
@@ -302,18 +327,34 @@ export default async function alertingRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(404).send(fail('not_found', 'That rule is gone.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'alert.rule.update',
+      resource: row.name,
+    });
+
     return reply.send(toRule(row));
   });
 
   app.delete('/api/alerting/rules/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
 
     const { id } = request.params as { id: string };
     await db
       .delete(alertRules)
       .where(and(eq(alertRules.id, id), eq(alertRules.organizationId, session.organization.id)));
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'alert.rule.delete',
+      resource: id,
+    });
 
     return reply.code(204).send();
   });
@@ -323,7 +364,7 @@ export default async function alertingRoutes(app: FastifyInstance) {
   app.get('/api/alerting/contact-points', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     const used = await usedContactPointIds(session.organization.id);
     const rows = await db
@@ -338,7 +379,8 @@ export default async function alertingRoutes(app: FastifyInstance) {
   app.post('/api/alerting/contact-points', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
+    if (!(await withinLimit(request, reply, session, 'contactPoints'))) return;
 
     const parsed = contactPointSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -367,13 +409,21 @@ export default async function alertingRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(500).send(fail('server_error', 'The contact point was not written.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'contact.point.create',
+      resource: String(parsed.data.name),
+    });
+
     return reply.code(201).send(toContactPoint(row, new Set()));
   });
 
   app.patch('/api/alerting/contact-points/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
 
     const { id } = request.params as { id: string };
     const parsed = contactPointSchema.safeParse(request.body);
@@ -404,13 +454,21 @@ export default async function alertingRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send(fail('not_found', 'That contact point is gone.'));
 
     const used = await usedContactPointIds(session.organization.id);
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'contact.point.update',
+      resource: String(parsed.data.name),
+    });
+
     return reply.send(toContactPoint(row, used));
   });
 
   app.delete('/api/alerting/contact-points/:id', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
 
     const { id } = request.params as { id: string };
 
@@ -426,6 +484,14 @@ export default async function alertingRoutes(app: FastifyInstance) {
       .delete(contactPoints)
       .where(and(eq(contactPoints.id, id), eq(contactPoints.organizationId, session.organization.id)));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'contact.point.delete',
+      resource: id,
+    });
+
     return reply.code(204).send();
   });
 
@@ -434,7 +500,7 @@ export default async function alertingRoutes(app: FastifyInstance) {
   app.get('/api/alerting/policy', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'workspace.view'))) return;
+    if (!(await allow(request, reply, session, 'workspace.view'))) return;
 
     return reply.send(await readPolicy(session.organization.id));
   });
@@ -442,7 +508,7 @@ export default async function alertingRoutes(app: FastifyInstance) {
   app.put('/api/alerting/policy', async (request, reply) => {
     const session = await requireUser(request, reply);
     if (!session) return;
-    if (!(await allow(reply, session, 'alert.manage'))) return;
+    if (!(await allow(request, reply, session, 'alert.manage'))) return;
 
     const parsed = policySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -503,6 +569,14 @@ export default async function alertingRoutes(app: FastifyInstance) {
           })),
         );
       }
+    });
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'notification.policy.update',
+      resource: String(parsed.data.routes.length + ' routes'),
     });
 
     return reply.send(await readPolicy(session.organization.id));

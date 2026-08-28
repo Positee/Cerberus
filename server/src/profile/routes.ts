@@ -6,6 +6,7 @@ import { memberships, organizations, sessions, users } from '../db/schema.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { publicUserColumns, toPublicUser } from '../auth/present.js';
 import { createSession, destroySession, readSession } from '../auth/session.js';
+import { record } from '../audit/record.js';
 import { fail, fieldErrors } from '../http/errors.js';
 import type { AvatarType, PublicUser, SessionPayload } from '../../../shared/api.js';
 import { AVATAR_MAX_BYTES, AVATAR_TYPES } from '../../../shared/api.js';
@@ -110,6 +111,14 @@ export default async function profileRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(401).send(fail('unauthorized', 'Sign in to continue.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'profile.update',
+      resource: String(session.user.email),
+    });
+
     return reply.send(toPublicUser(row));
   });
 
@@ -149,6 +158,14 @@ export default async function profileRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(401).send(fail('unauthorized', 'Sign in to continue.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'profile.email.change',
+      resource: String(parsed.data.email),
+    });
+
     return reply.send(toPublicUser(row));
   });
 
@@ -176,6 +193,14 @@ export default async function profileRoutes(app: FastifyInstance) {
 
     await db.delete(sessions).where(eq(sessions.userId, session.user.id));
     await createSession(request, reply, session.user.id, session.organization.id);
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'profile.password.change',
+      resource: String(session.user.email),
+    });
 
     return reply.code(204).send();
   });
@@ -226,6 +251,14 @@ export default async function profileRoutes(app: FastifyInstance) {
       .set({ avatar: body, avatarType: type, avatarUpdatedAt: now })
       .where(eq(users.id, session.user.id));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'profile.avatar.set',
+      resource: String(session.user.email),
+    });
+
     return reply.send({ ...session.user, avatarUpdatedAt: now.toISOString() } satisfies PublicUser);
   });
 
@@ -237,6 +270,14 @@ export default async function profileRoutes(app: FastifyInstance) {
       .update(users)
       .set({ avatar: null, avatarType: null, avatarUpdatedAt: null })
       .where(eq(users.id, session.user.id));
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'profile.avatar.remove',
+      resource: String(session.user.email),
+    });
 
     return reply.send({ ...session.user, avatarUpdatedAt: null } satisfies PublicUser);
   });
@@ -283,6 +324,14 @@ export default async function profileRoutes(app: FastifyInstance) {
     });
 
     await destroySession(request, reply);
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'account.delete',
+      resource: String(session.user.email),
+    });
+
     return reply.code(204).send();
   });
 }

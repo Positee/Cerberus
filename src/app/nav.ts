@@ -1,4 +1,5 @@
 import {
+  Activity,
   BellRing,
   Boxes,
   Building2,
@@ -18,6 +19,7 @@ import {
   Send,
   Settings,
   ShieldAlert,
+  UserPlus,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -78,6 +80,12 @@ export const NAV_GROUPS: NavGroup[] = [
         label: 'Alerting',
         subtitle: 'Rules that decide what wakes somebody up.',
         icon: BellRing,
+      },
+      {
+        to: '/argus',
+        label: 'Uptime',
+        subtitle: 'Watch the services you depend on.',
+        icon: Activity,
       },
       {
         to: '/assets',
@@ -181,6 +189,12 @@ export const HIDDEN_ITEMS: NavItem[] = [
     label: 'Usage and plan',
     subtitle: 'What your workspace consumes, and what it costs.',
     icon: Gauge,
+  },
+  {
+    to: '/invites',
+    label: 'Invite teammates',
+    subtitle: 'Bring people into this workspace.',
+    icon: UserPlus,
   },
   {
     to: '/alerting/rules',

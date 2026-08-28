@@ -12,6 +12,8 @@ import {
   toPublicUser,
 } from './present.js';
 import { createSession, destroySession, readSession } from './session.js';
+import { record, recordDenied } from '../audit/record.js';
+import { checkLock, clearFailures, lockMessage, noteFailure } from './lockout.js';
 import { fail, fieldErrors } from '../http/errors.js';
 import type { SessionPayload } from '../../../shared/api.js';
 import { EMAIL_PATTERN, PASSWORD_MAX_LENGTH, gradePassword, normalizeEmail } from '../../../shared/password.js';
@@ -121,6 +123,14 @@ export default async function authRoutes(app: FastifyInstance) {
     });
 
     await createSession(request, reply, payload.user.id, payload.organization.id);
+
+    record(request, {
+      organizationId: payload.organization.id,
+      actorUserId: payload.user.id,
+      actor: payload.user.email,
+      action: 'auth.signup',
+      resource: payload.organization.name,
+    });
     return reply.code(201).send(payload);
   });
 
@@ -132,6 +142,11 @@ export default async function authRoutes(app: FastifyInstance) {
 
     const address = normalizeEmail(parsed.data.email);
     // The hash is the only private column this route needs.
+    const lock = await checkLock(address);
+    if (lock.locked) {
+      return reply.code(429).send(fail('invalid_credentials', lockMessage(lock.minutesLeft)));
+    }
+
     const rows = await db
       .select({ ...publicUserColumns, passwordHash: users.passwordHash })
       .from(users)
@@ -140,13 +155,49 @@ export default async function authRoutes(app: FastifyInstance) {
     const user = rows[0];
 
     if (!user) {
-      // Spend the same time as a real verify, then give the same message.
+      // Spend the same time as a real verify, then give the same message. The
+      // failure is counted as well, so an address that belongs to nobody locks
+      // on the same schedule and the lock tells an attacker nothing.
       await burnTime();
+      const state = await noteFailure(address);
+      if (state.locked) {
+        return reply.code(429).send(fail('invalid_credentials', lockMessage(state.minutesLeft)));
+      }
       return reply.code(401).send(fail('invalid_credentials', 'That email or password is wrong.'));
     }
 
     const ok = await verifyPassword(user.passwordHash, parsed.data.password);
     if (!ok) {
+      /*
+         A refused sign in is the row an auditor most wants, so it is written
+         against the workspace somebody tried to reach.
+
+         An unknown email cannot be recorded at all, because it belongs to no
+         workspace and nobody would ever be able to read it. The reply is
+         identical either way, so this leaks nothing about which emails exist.
+      */
+      const [attempted] = await db
+        .select({ organizationId: memberships.organizationId })
+        .from(memberships)
+        .where(eq(memberships.userId, user.id))
+        .limit(1);
+
+      const state = await noteFailure(address);
+
+      if (attempted) {
+        recordDenied(request, {
+          organizationId: attempted.organizationId,
+          actorUserId: user.id,
+          actor: address,
+          action: 'auth.login',
+          resource: state.locked ? `The console, locked for ${state.minutesLeft} minutes` : 'The console',
+        });
+      }
+
+      if (state.locked) {
+        return reply.code(429).send(fail('invalid_credentials', lockMessage(state.minutesLeft)));
+      }
+
       return reply.code(401).send(fail('invalid_credentials', 'That email or password is wrong.'));
     }
 
@@ -162,8 +213,17 @@ export default async function authRoutes(app: FastifyInstance) {
       return reply.code(401).send(fail('invalid_credentials', 'That account has no workspace.'));
     }
 
+    await clearFailures(address);
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
     await createSession(request, reply, user.id, membership.organization.id);
+
+    record(request, {
+      organizationId: membership.organization.id,
+      actorUserId: user.id,
+      actor: address,
+      action: 'auth.login',
+      resource: 'The console',
+    });
 
     return reply.send({
       user: toPublicUser(user),
@@ -173,7 +233,20 @@ export default async function authRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/auth/logout', async (request, reply) => {
+    // Read first. After destroySession there is nobody left to name.
+    const session = await readSession(request);
     await destroySession(request, reply);
+
+    if (session) {
+      record(request, {
+        organizationId: session.organization.id,
+        actorUserId: session.user.id,
+        actor: session.user.email,
+        action: 'auth.logout',
+        resource: 'The console',
+      });
+    }
+
     return reply.code(204).send();
   });
 

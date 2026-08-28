@@ -5,7 +5,10 @@ import { z } from 'zod';
 import { db } from '../db/client.js';
 import { invitations, memberships, organizations, users } from '../db/schema.js';
 import { readSession } from '../auth/session.js';
+import { record } from '../audit/record.js';
 import { fail, fieldErrors } from '../http/errors.js';
+import { notifyLater } from '../notifications/notify.js';
+import { needsPlan, withinLimit } from '../http/plan.js';
 import { env } from '../env.js';
 import type {
   InvitationPreview,
@@ -100,6 +103,11 @@ export default async function invitationRoutes(app: FastifyInstance) {
       return reply.code(403).send(fail('unauthorized', 'Your role does not allow inviting people.'));
     }
 
+    if (!(await needsPlan(request, reply, session, 'pro', 'Inviting people'))) return;
+    // A pending invitation counts as a seat, so a workspace cannot invite its
+    // way past the cap and only discover it when somebody tries to join.
+    if (!(await withinLimit(request, reply, session, 'seats'))) return;
+
     const parsed = createSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send(fail('invalid_request', 'Check the form.', fieldErrors(parsed.error)));
@@ -159,6 +167,25 @@ export default async function invitationRoutes(app: FastifyInstance) {
     const row = rows[0];
     if (!row) return reply.code(500).send(fail('server_error', 'The invitation was not written.'));
 
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'member.invite',
+      resource: String(parsed.data.email),
+    });
+
+    notifyLater(
+      {
+        organizationId: session.organization.id,
+        source: 'workspace',
+        title: `${session.user.fullName} invited ${parsed.data.email}`,
+        body: `As ${parsed.data.role}. The link works for 7 days.`,
+        href: '/invites',
+      },
+      request.log,
+    );
+
     return reply.code(201).send({
       invitation: toInvitation({ ...row, invitedBy: session.user.fullName }),
       link: `${env.WEB_ORIGIN}/join/${token}`,
@@ -183,6 +210,14 @@ export default async function invitationRoutes(app: FastifyInstance) {
     await db
       .delete(invitations)
       .where(and(eq(invitations.id, id), eq(invitations.organizationId, session.organization.id)));
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'invitation.revoke',
+      resource: String('Invitation ' + id),
+    });
 
     return reply.code(204).send();
   });
@@ -286,6 +321,25 @@ export default async function invitationRoutes(app: FastifyInstance) {
       .from(organizations)
       .where(eq(organizations.id, invite.organizationId))
       .limit(1);
+
+    record(request, {
+      organizationId: session.organization.id,
+      actorUserId: session.user.id,
+      actor: session.user.email,
+      action: 'invitation.accept',
+      resource: String(session.user.email),
+    });
+
+    notifyLater(
+      {
+        organizationId: session.organization.id,
+        source: 'workspace',
+        title: `${session.user.fullName} joined the workspace`,
+        body: `They accepted an invitation.`,
+        href: '/workspace',
+      },
+      request.log,
+    );
 
     return reply.send({ workspaceName: workspace[0]?.name ?? 'the workspace' });
   });

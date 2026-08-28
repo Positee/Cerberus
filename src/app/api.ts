@@ -1,3 +1,5 @@
+import type { AuditFilter, AuditPage, ExportFormat } from '../../shared/audit';
+import type { Subscription, Usage } from '../../shared/plans';
 import type { Schedule, SaveScheduleRequest } from '../../shared/schedules';
 import type {
   CreateTaskRequest,
@@ -6,6 +8,7 @@ import type {
   Task,
   TaskList,
   TimelineEntry,
+  TaskAttachment,
   UpdateTaskRequest,
 } from '../../shared/tasks';
 import type {
@@ -35,6 +38,12 @@ import type {
   SaveContactPointRequest,
   SaveNotificationPolicyRequest,
 } from '../../shared/alerting';
+import type {
+  Heartbeat,
+  Monitor,
+  MonitorSummary,
+  SaveMonitorRequest,
+} from '../../shared/argus';
 
 /**
  * The one place the browser talks to the API.
@@ -309,19 +318,25 @@ export function createList(body: { projectId: string; folderId?: string | null; 
 }
 
 export function listTasks(
-  query: { status?: string; priority?: string; assigneeId?: string; archived?: boolean } = {},
+  query: {
+    status?: string;
+    priority?: string;
+    assigneeId?: string;
+    /** 'only' is the archive folder. 'true' returns live and archived together. */
+    archived?: 'only' | boolean;
+  } = {},
 ): Promise<{ tasks: Task[] }> {
   const search = new URLSearchParams();
   if (query.status) search.set('status', query.status);
   if (query.priority) search.set('priority', query.priority);
   if (query.assigneeId) search.set('assigneeId', query.assigneeId);
-  if (query.archived) search.set('archived', 'true');
+  if (query.archived) search.set('archived', query.archived === 'only' ? 'only' : 'true');
   const tail = search.toString();
   return request<{ tasks: Task[] }>(`/api/tasks${tail ? `?${tail}` : ''}`);
 }
 
-export function getTask(id: string): Promise<{ task: Task; timeline: TimelineEntry[] }> {
-  return request<{ task: Task; timeline: TimelineEntry[] }>(`/api/tasks/${id}`);
+export function getTask(id: string): Promise<{ task: Task; timeline: TimelineEntry[]; attachments: TaskAttachment[] }> {
+  return request<{ task: Task; timeline: TimelineEntry[]; attachments: TaskAttachment[] }>(`/api/tasks/${id}`);
 }
 
 export function createTask(body: CreateTaskRequest): Promise<Task> {
@@ -336,10 +351,29 @@ export function archiveTask(id: string, archived = true): Promise<void> {
   return request<void>(`/api/tasks/${id}/archive`, { method: 'POST', body: JSON.stringify({ archived }) });
 }
 
+/** Deletes for good. The API refuses unless the task is archived first. */
+export function deleteTask(id: string): Promise<void> {
+  return request<void>(`/api/tasks/${id}`, { method: 'DELETE' });
+}
+
 export function addComment(taskId: string, body: string): Promise<TimelineEntry> {
   return request<TimelineEntry>(`/api/tasks/${taskId}/comments`, {
     method: 'POST',
     body: JSON.stringify({ body }),
+  });
+}
+
+export function uploadTaskAttachment(taskId: string, file: File, commentId?: string): Promise<TaskAttachment> {
+  const search = new URLSearchParams();
+  if (commentId) search.set('commentId', commentId);
+
+  return request<TaskAttachment>(`/api/tasks/${taskId}/attachments${search.toString() ? `?${search}` : ''}`, {
+    method: 'POST',
+    body: file,
+    headers: {
+      'content-type': file.type || 'application/octet-stream',
+      'x-file-name': encodeURIComponent(file.name || 'attachment'),
+    },
   });
 }
 
@@ -425,4 +459,171 @@ export function markAnnouncementsRead(id?: string): Promise<void> {
 export function avatarUrl(user: PublicUser): string | null {
   if (!user.avatarUpdatedAt) return null;
   return `/api/profile/avatar?v=${encodeURIComponent(user.avatarUpdatedAt)}`;
+}
+
+/* ----------------------------------------------------------------- argus -- */
+
+export function listMonitors(): Promise<{ monitors: MonitorSummary[] }> {
+  return request<{ monitors: MonitorSummary[] }>('/api/argus/monitors');
+}
+
+export function getMonitor(id: string): Promise<{ monitor: Monitor }> {
+  return request<{ monitor: Monitor }>('/api/argus/monitors/' + id);
+}
+
+export function createMonitor(body: SaveMonitorRequest): Promise<Monitor> {
+  return request<Monitor>('/api/argus/monitors', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function updateMonitor(id: string, body: Partial<SaveMonitorRequest>): Promise<Monitor> {
+  return request<Monitor>('/api/argus/monitors/' + id, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+export function deleteMonitor(id: string): Promise<void> {
+  return request<void>('/api/argus/monitors/' + id, { method: 'DELETE' });
+}
+
+export function pauseMonitor(id: string): Promise<Monitor> {
+  return request<Monitor>('/api/argus/monitors/' + id + '/pause', { method: 'POST' });
+}
+
+export function resumeMonitor(id: string): Promise<Monitor> {
+  return request<Monitor>('/api/argus/monitors/' + id + '/resume', { method: 'POST' });
+}
+
+export function resetMonitor(id: string): Promise<Monitor> {
+  return request<Monitor>('/api/argus/monitors/' + id + '/reset', { method: 'POST' });
+}
+
+export function listHeartbeats(
+  monitorId: string,
+  query: { limit?: number; since?: string } = {},
+): Promise<{ heartbeats: Heartbeat[] }> {
+  const search = new URLSearchParams();
+  if (query.limit) search.set('limit', String(query.limit));
+  if (query.since) search.set('since', query.since);
+  const tail = search.toString();
+  return request<{ heartbeats: Heartbeat[] }>('/api/argus/monitors/' + monitorId + '/heartbeats' + (tail ? '?' + tail : ''));
+}
+
+/* ------------------------------------------------------------------- inbox -- */
+
+export type InboxConversationSummary = {
+  id: string;
+  organizationId: string;
+  createdAt: string;
+  updatedAt: string;
+  otherUser: {
+    id: string;
+    fullName: string;
+    email: string;
+    avatarUpdatedAt: string | null;
+  };
+  lastMessage: {
+    body: string;
+    senderId: string;
+    createdAt: string;
+  } | null;
+  unreadCount: number;
+};
+
+export type InboxMessage = {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  body: string;
+  replyToId: string | null;
+  createdAt: string;
+  editedAt: string | null;
+  sender: {
+    id: string;
+    fullName: string;
+    email: string;
+    avatarUpdatedAt: string | null;
+  };
+};
+
+export type InboxMember = {
+  userId: string;
+  fullName: string;
+  email: string;
+  avatarUpdatedAt: string | null;
+};
+
+export function listConversations(): Promise<{ conversations: InboxConversationSummary[] }> {
+  return request<{ conversations: InboxConversationSummary[] }>('/api/inbox/conversations');
+}
+
+export function createConversation(userId: string): Promise<{ conversation: { id: string; createdAt: string; updatedAt: string } }> {
+  return request('/api/inbox/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export function listMessages(
+  conversationId: string,
+  query: { limit?: number; before?: string } = {},
+): Promise<{ messages: InboxMessage[] }> {
+  const search = new URLSearchParams();
+  if (query.limit) search.set('limit', String(query.limit));
+  if (query.before) search.set('before', query.before);
+  const tail = search.toString();
+  return request('/api/inbox/conversations/' + conversationId + '/messages' + (tail ? '?' + tail : ''));
+}
+
+export function sendMessage(
+  conversationId: string,
+  body: string,
+  replyToId?: string,
+): Promise<{ message: InboxMessage }> {
+  return request('/api/inbox/conversations/' + conversationId + '/messages', {
+    method: 'POST',
+    body: JSON.stringify({ body, replyToId }),
+  });
+}
+
+export function markConversationRead(conversationId: string): Promise<void> {
+  return request('/api/inbox/conversations/' + conversationId + '/read', { method: 'POST' });
+}
+
+export function listInboxMembers(): Promise<{ members: InboxMember[] }> {
+  return request<{ members: InboxMember[] }>('/api/inbox/members');
+}
+
+/* ------------------------------------------------------------------ plan -- */
+
+export type PlanPayload = {
+  subscription: Subscription;
+  usage: Usage;
+};
+
+/** What the workspace pays for, and what it currently holds. */
+export function getPlan(): Promise<PlanPayload> {
+  return request<PlanPayload>('/api/plan');
+}
+
+/* ----------------------------------------------------------------- audit -- */
+
+import { filterToQuery } from '../../shared/audit';
+
+export function listAudit(filter: AuditFilter, page = 0): Promise<AuditPage> {
+  const query = filterToQuery(filter);
+  const parts = [query, page > 0 ? `page=${page}` : ''].filter(Boolean).join('&');
+  return request<AuditPage>(`/api/audit${parts ? `?${parts}` : ''}`);
+}
+
+export function listAuditActors(): Promise<{ actors: string[] }> {
+  return request<{ actors: string[] }>('/api/audit/actors');
+}
+
+/**
+ * The export URL.
+ *
+ * A plain navigation rather than a fetch, so the browser saves the file itself
+ * and the session cookie rides along with the request.
+ */
+export function auditExportUrl(filter: AuditFilter, format: ExportFormat): string {
+  const query = filterToQuery(filter);
+  return `/api/audit/export?format=${format}${query ? `&${query}` : ''}`;
 }
