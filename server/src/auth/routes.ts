@@ -5,8 +5,17 @@ import { z } from 'zod';
 import { db } from '../db/client.js';
 import { memberships, organizations, users } from '../db/schema.js';
 import { burnTime, hashPassword, verifyPassword } from './password.js';
+import {
+  publicOrganizationColumns,
+  publicUserColumns,
+  toPublicOrganization,
+  toPublicUser,
+} from './present.js';
 import { createSession, destroySession, readSession } from './session.js';
-import type { ApiError, SessionPayload } from '../../../shared/api.js';
+import { record, recordDenied } from '../audit/record.js';
+import { checkLock, clearFailures, lockMessage, noteFailure } from './lockout.js';
+import { fail, fieldErrors } from '../http/errors.js';
+import type { SessionPayload } from '../../../shared/api.js';
 import { EMAIL_PATTERN, PASSWORD_MAX_LENGTH, gradePassword, normalizeEmail } from '../../../shared/password.js';
 
 const email = z.string().trim().toLowerCase().regex(EMAIL_PATTERN, 'Enter a valid email address.');
@@ -39,19 +48,6 @@ const signupSchema = z
   });
 
 const loginSchema = z.object({ email, password: z.string().max(PASSWORD_MAX_LENGTH) });
-
-function fail(code: ApiError['error']['code'], message: string, fields?: Record<string, string>): ApiError {
-  return { error: { code, message, ...(fields ? { fields } : {}) } };
-}
-
-function fieldErrors(error: z.ZodError): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const issue of error.issues) {
-    const key = issue.path.join('.') || 'form';
-    out[key] ??= issue.message;
-  }
-  return out;
-}
 
 /** Slugs must be unique. A short random suffix avoids a retry loop. */
 function toSlug(name: string): string {
@@ -96,7 +92,7 @@ export default async function authRoutes(app: FastifyInstance) {
           teamSize: isPersonal ? null : (input.teamSize ?? null),
           useCase: isPersonal ? null : (input.useCase ?? null),
         })
-        .returning();
+        .returning(publicOrganizationColumns);
 
       const [user] = await tx
         .insert(users)
@@ -107,7 +103,7 @@ export default async function authRoutes(app: FastifyInstance) {
           githubHandle: isPersonal ? (input.githubHandle ?? null) : null,
           primaryStack: isPersonal ? (input.primaryStack ?? null) : null,
         })
-        .returning();
+        .returning(publicUserColumns);
 
       if (!organization || !user) throw new Error('Insert returned no row.');
 
@@ -120,26 +116,21 @@ export default async function authRoutes(app: FastifyInstance) {
       });
 
       return {
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.fullName,
-          githubHandle: user.githubHandle,
-          primaryStack: user.primaryStack,
-        },
-        organization: {
-          id: organization.id,
-          name: organization.name,
-          slug: organization.slug,
-          kind: organization.kind,
-          teamSize: organization.teamSize,
-          useCase: organization.useCase,
-        },
+        user: toPublicUser(user),
+        organization: toPublicOrganization(organization),
         role: 'owner',
       } satisfies SessionPayload;
     });
 
     await createSession(request, reply, payload.user.id, payload.organization.id);
+
+    record(request, {
+      organizationId: payload.organization.id,
+      actorUserId: payload.user.id,
+      actor: payload.user.email,
+      action: 'auth.signup',
+      resource: payload.organization.name,
+    });
     return reply.code(201).send(payload);
   });
 
@@ -150,22 +141,68 @@ export default async function authRoutes(app: FastifyInstance) {
     }
 
     const address = normalizeEmail(parsed.data.email);
-    const rows = await db.select().from(users).where(eq(users.email, address)).limit(1);
+    // The hash is the only private column this route needs.
+    const lock = await checkLock(address);
+    if (lock.locked) {
+      return reply.code(429).send(fail('invalid_credentials', lockMessage(lock.minutesLeft)));
+    }
+
+    const rows = await db
+      .select({ ...publicUserColumns, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.email, address))
+      .limit(1);
     const user = rows[0];
 
     if (!user) {
-      // Spend the same time as a real verify, then give the same message.
+      // Spend the same time as a real verify, then give the same message. The
+      // failure is counted as well, so an address that belongs to nobody locks
+      // on the same schedule and the lock tells an attacker nothing.
       await burnTime();
+      const state = await noteFailure(address);
+      if (state.locked) {
+        return reply.code(429).send(fail('invalid_credentials', lockMessage(state.minutesLeft)));
+      }
       return reply.code(401).send(fail('invalid_credentials', 'That email or password is wrong.'));
     }
 
     const ok = await verifyPassword(user.passwordHash, parsed.data.password);
     if (!ok) {
+      /*
+         A refused sign in is the row an auditor most wants, so it is written
+         against the workspace somebody tried to reach.
+
+         An unknown email cannot be recorded at all, because it belongs to no
+         workspace and nobody would ever be able to read it. The reply is
+         identical either way, so this leaks nothing about which emails exist.
+      */
+      const [attempted] = await db
+        .select({ organizationId: memberships.organizationId })
+        .from(memberships)
+        .where(eq(memberships.userId, user.id))
+        .limit(1);
+
+      const state = await noteFailure(address);
+
+      if (attempted) {
+        recordDenied(request, {
+          organizationId: attempted.organizationId,
+          actorUserId: user.id,
+          actor: address,
+          action: 'auth.login',
+          resource: state.locked ? `The console, locked for ${state.minutesLeft} minutes` : 'The console',
+        });
+      }
+
+      if (state.locked) {
+        return reply.code(429).send(fail('invalid_credentials', lockMessage(state.minutesLeft)));
+      }
+
       return reply.code(401).send(fail('invalid_credentials', 'That email or password is wrong.'));
     }
 
     const membershipRows = await db
-      .select({ organization: organizations, role: memberships.role })
+      .select({ organization: publicOrganizationColumns, role: memberships.role })
       .from(memberships)
       .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(eq(memberships.userId, user.id))
@@ -176,31 +213,40 @@ export default async function authRoutes(app: FastifyInstance) {
       return reply.code(401).send(fail('invalid_credentials', 'That account has no workspace.'));
     }
 
+    await clearFailures(address);
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
     await createSession(request, reply, user.id, membership.organization.id);
 
+    record(request, {
+      organizationId: membership.organization.id,
+      actorUserId: user.id,
+      actor: address,
+      action: 'auth.login',
+      resource: 'The console',
+    });
+
     return reply.send({
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        githubHandle: user.githubHandle,
-        primaryStack: user.primaryStack,
-      },
-      organization: {
-        id: membership.organization.id,
-        name: membership.organization.name,
-        slug: membership.organization.slug,
-        kind: membership.organization.kind,
-        teamSize: membership.organization.teamSize,
-        useCase: membership.organization.useCase,
-      },
+      user: toPublicUser(user),
+      organization: toPublicOrganization(membership.organization),
       role: membership.role,
     } satisfies SessionPayload);
   });
 
   app.post('/api/auth/logout', async (request, reply) => {
+    // Read first. After destroySession there is nobody left to name.
+    const session = await readSession(request);
     await destroySession(request, reply);
+
+    if (session) {
+      record(request, {
+        organizationId: session.organization.id,
+        actorUserId: session.user.id,
+        actor: session.user.email,
+        action: 'auth.logout',
+        resource: 'The console',
+      });
+    }
+
     return reply.code(204).send();
   });
 

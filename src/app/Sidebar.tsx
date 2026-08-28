@@ -1,66 +1,58 @@
 import { NavLink } from 'react-router-dom';
-import {
-  Boxes,
-  ChevronsLeft,
-  FileBarChart,
-  LayoutDashboard,
-  LifeBuoy,
-  Plug,
-  ScrollText,
-  Settings,
-  ShieldAlert,
-  type LucideIcon,
-} from 'lucide-react';
-
-type Item = { to: string; label: string; icon: LucideIcon; badge?: number };
-
-const PRIMARY: Item[] = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/reporting', label: 'Reporting', icon: FileBarChart },
-  { to: '/audit', label: 'Audit', icon: ScrollText },
-];
-
-const SECONDARY: Item[] = [
-  { to: '/findings', label: 'Findings', icon: ShieldAlert, badge: 37 },
-  { to: '/assets', label: 'Assets', icon: Boxes },
-  { to: '/integrations', label: 'Integrations', icon: Plug },
-];
-
-const FOOTER: Item[] = [{ to: '/settings', label: 'Settings', icon: Settings }];
+import { ChevronsLeft } from 'lucide-react';
+import { Lock } from 'lucide-react';
+import { FOOTER_ITEMS, visibleGroups, type NavGroup, type NavItem } from './nav';
+import { planForModule, planReaches, PLAN_LABEL, type Plan } from '../../shared/plans';
 
 type Props = {
   collapsed: boolean;
+  /** True when the account is an organization. It reveals the org modules. */
+  organization: boolean;
+  /** What the workspace pays for. A module above it draws a lock. */
+  plan: Plan;
   onToggle: () => void;
 };
 
-export default function Sidebar({ collapsed, onToggle }: Props) {
-  const renderGroup = (items: Item[], label?: string) => (
-    <>
-      {label && !collapsed && <p className="nav-group-label">{label}</p>}
-      <ul className="nav-list">
-        {items.map((item) => {
-          const Icon = item.icon;
-          return (
-            <li key={item.to}>
-              <NavLink
-                to={item.to}
-                className={({ isActive }) => (isActive ? 'nav-item current' : 'nav-item')}
-                // The label is the accessible name when the rail is collapsed.
-                title={collapsed ? item.label : undefined}
-              >
-                <Icon size={18} aria-hidden="true" />
-                <span className="nav-text">{item.label}</span>
-                {item.badge !== undefined && (
-                  <span className="nav-badge" aria-label={`${item.badge} open critical`}>
-                    {item.badge}
-                  </span>
-                )}
-              </NavLink>
-            </li>
-          );
-        })}
-      </ul>
-    </>
+export default function Sidebar({ collapsed, organization, plan, onToggle }: Props) {
+  const groups = visibleGroups(organization);
+
+  const renderItem = (item: NavItem) => {
+    const Icon = item.icon;
+    const needed = planForModule(item.to);
+    const locked = !planReaches(plan, needed);
+
+    // A locked module still links. The page behind it says what the module does
+    // and what unlocks it, which is how somebody learns the feature exists.
+    return (
+      <li key={item.to}>
+        <NavLink
+          to={item.to}
+          className={({ isActive }) =>
+            `nav-item${isActive ? ' current' : ''}${locked ? ' locked' : ''}`
+          }
+          title={locked ? `${item.label} needs ${PLAN_LABEL[needed]}` : collapsed ? item.label : undefined}
+        >
+          <Icon size={18} aria-hidden="true" />
+          <span className="nav-text">{item.label}</span>
+          {locked ? (
+            <Lock size={13} className="nav-lock" aria-label={`Needs ${PLAN_LABEL[needed]}`} />
+          ) : (
+            item.badge !== undefined && (
+              <span className="nav-badge" aria-label={`${item.badge} open critical`}>
+                {item.badge}
+              </span>
+            )
+          )}
+        </NavLink>
+      </li>
+    );
+  };
+
+  const renderGroup = (group: NavGroup, key: string) => (
+    <div className="nav-group" key={key}>
+      {group.label && !collapsed && <p className="nav-group-label">{group.label}</p>}
+      <ul className="nav-list">{group.items.map(renderItem)}</ul>
+    </div>
   );
 
   return (
@@ -71,20 +63,11 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
       </NavLink>
 
       <div className="sidebar-scroll">
-        {renderGroup(PRIMARY)}
-        {renderGroup(SECONDARY, 'Monitor')}
+        {groups.map((group, index) => renderGroup(group, group.label ?? `group-${index}`))}
       </div>
 
       <div className="sidebar-foot">
-        {renderGroup(FOOTER)}
-        <ul className="nav-list">
-          <li>
-            <button type="button" className="nav-item" title={collapsed ? 'Help' : undefined}>
-              <LifeBuoy size={18} aria-hidden="true" />
-              <span className="nav-text">Help</span>
-            </button>
-          </li>
-        </ul>
+        {renderGroup({ items: FOOTER_ITEMS }, 'footer')}
         <button
           type="button"
           className="collapse-toggle"

@@ -3,6 +3,12 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { and, eq, gt, lt } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { memberships, organizations, sessions, users } from '../db/schema.js';
+import {
+  publicOrganizationColumns,
+  publicUserColumns,
+  toPublicOrganization,
+  toPublicUser,
+} from './present.js';
 import { isProduction } from '../env.js';
 import type { SessionPayload } from '../../../shared/api.js';
 
@@ -57,10 +63,11 @@ export async function readSession(request: FastifyRequest): Promise<SessionPaylo
   const token = request.cookies[COOKIE_NAME];
   if (!token) return null;
 
+  // Named columns, so a session read never drags the avatar bytes with it.
   const rows = await db
     .select({
-      user: users,
-      organization: organizations,
+      user: publicUserColumns,
+      organization: publicOrganizationColumns,
       role: memberships.role,
     })
     .from(sessions)
@@ -77,21 +84,8 @@ export async function readSession(request: FastifyRequest): Promise<SessionPaylo
   if (!row) return null;
 
   return {
-    user: {
-      id: row.user.id,
-      email: row.user.email,
-      fullName: row.user.fullName,
-      githubHandle: row.user.githubHandle,
-      primaryStack: row.user.primaryStack,
-    },
-    organization: {
-      id: row.organization.id,
-      name: row.organization.name,
-      slug: row.organization.slug,
-      kind: row.organization.kind,
-      teamSize: row.organization.teamSize,
-      useCase: row.organization.useCase,
-    },
+    user: toPublicUser(row.user),
+    organization: toPublicOrganization(row.organization),
     role: row.role,
   };
 }
