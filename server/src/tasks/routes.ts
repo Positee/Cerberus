@@ -19,6 +19,7 @@ import { record as auditRecord, recordDenied as auditRecordDenied } from '../aud
 import { notifyLater } from '../notifications/notify.js';
 import { fail, fieldErrors } from '../http/errors.js';
 import { needsPlan, withinLimit } from '../http/plan.js';
+import { loadTaskActivityCounts } from './activity-counts.js';
 import type { SessionPayload } from '../../../shared/api.js';
 import { can, type Permission } from '../../../shared/permissions.js';
 import {
@@ -469,6 +470,8 @@ export default async function taskRoutes(app: FastifyInstance) {
       .where(and(...filters))
       .orderBy(asc(tasks.position), desc(tasks.createdAt));
 
+    const activityCounts = await loadTaskActivityCounts(rows.map((row) => row.task.id));
+
     return reply.send({
       tasks: rows.map((row) =>
         shapeTask(
@@ -477,7 +480,7 @@ export default async function taskRoutes(app: FastifyInstance) {
           row.assigneeId
             ? { id: row.assigneeId, fullName: row.assigneeName ?? '', email: row.assigneeEmail ?? '' }
             : null,
-          { subtasks: 0, comments: 0, attachments: 0 },
+          activityCounts.get(row.task.id) ?? { subtasks: 0, comments: 0, attachments: 0 },
           [],
         ),
       ),

@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, desc, eq, isNull, lt } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/client.js';
-import { invitations, memberships, organizations, users } from '../db/schema.js';
-import { readSession } from '../auth/session.js';
+import { invitations, memberships, organizations, sessions, users } from '../db/schema.js';
+import { currentSessionTokenHash, readSession } from '../auth/session.js';
 import { record } from '../audit/record.js';
 import { fail, fieldErrors } from '../http/errors.js';
 import { notifyLater } from '../notifications/notify.js';
@@ -295,26 +295,53 @@ export default async function invitationRoutes(app: FastifyInstance) {
         .send(fail('unauthorized', `That invitation is for ${invite.email}. Sign in as that person.`));
     }
 
-    const already = await db
-      .select({ id: memberships.id })
-      .from(memberships)
-      .where(and(eq(memberships.organizationId, invite.organizationId), eq(memberships.userId, session.user.id)))
-      .limit(1);
+    const tokenHash = currentSessionTokenHash(request);
+    if (!tokenHash) return reply.code(401).send(fail('unauthorized', 'Sign in to continue.'));
 
-    await db.transaction(async (tx) => {
-      if (already.length === 0) {
-        await tx.insert(memberships).values({
+    const accepted = await db.transaction(async (tx) => {
+      const [accepted] = await tx
+        .update(invitations)
+        .set({ acceptedAt: new Date(), acceptedBy: session.user.id })
+        .where(
+          and(
+            eq(invitations.id, invite.id),
+            isNull(invitations.acceptedAt),
+            gt(invitations.expiresAt, new Date()),
+          ),
+        )
+        .returning({ id: invitations.id });
+
+      if (!accepted) return false;
+
+      await tx
+        .insert(memberships)
+        .values({
           userId: session.user.id,
           organizationId: invite.organizationId,
           role: invite.role,
-        });
-      }
+        })
+        .onConflictDoNothing({ target: [memberships.userId, memberships.organizationId] });
 
-      await tx
-        .update(invitations)
-        .set({ acceptedAt: new Date(), acceptedBy: session.user.id })
-        .where(eq(invitations.id, invite.id));
+      const [switched] = await tx
+        .update(sessions)
+        .set({ organizationId: invite.organizationId })
+        .where(
+          and(
+            eq(sessions.tokenHash, tokenHash),
+            eq(sessions.userId, session.user.id),
+            gt(sessions.expiresAt, new Date()),
+          ),
+        )
+        .returning({ id: sessions.id });
+
+      if (!switched) throw new Error('The current session expired while accepting the invitation.');
+
+      return true;
     });
+
+    if (!accepted) {
+      return reply.code(404).send(fail('not_found', 'That invitation is used, expired, or wrong.'));
+    }
 
     const workspace = await db
       .select({ name: organizations.name })
@@ -323,7 +350,7 @@ export default async function invitationRoutes(app: FastifyInstance) {
       .limit(1);
 
     record(request, {
-      organizationId: session.organization.id,
+      organizationId: invite.organizationId,
       actorUserId: session.user.id,
       actor: session.user.email,
       action: 'invitation.accept',
@@ -332,7 +359,7 @@ export default async function invitationRoutes(app: FastifyInstance) {
 
     notifyLater(
       {
-        organizationId: session.organization.id,
+        organizationId: invite.organizationId,
         source: 'workspace',
         title: `${session.user.fullName} joined the workspace`,
         body: `They accepted an invitation.`,
