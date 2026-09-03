@@ -13,6 +13,7 @@ import scheduleRoutes from './schedules/routes.js';
 import notificationRoutes from './notifications/routes.js';
 import argusRoutes from './argus/routes.js';
 import inboxRoutes from './inbox/routes.js';
+import knowledgeRoutes from './knowledge/routes.js';
 import { startRunner } from './schedules/runner.js';
 import { startProber } from './argus/prober.js';
 import { purgeExpiredSessions } from './auth/session.js';
@@ -112,6 +113,7 @@ await app.register(scheduleRoutes);
 await app.register(notificationRoutes);
 await app.register(argusRoutes);
 await app.register(inboxRoutes);
+await app.register(knowledgeRoutes);
 
 let stopRunner: (() => void) | null = null;
 let stopProber: (() => void) | null = null;
