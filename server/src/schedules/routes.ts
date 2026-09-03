@@ -11,7 +11,7 @@ import type { SessionPayload } from '../../../shared/api.js';
 import { can, type Permission } from '../../../shared/permissions.js';
 import { PRIORITY_ORDER, STATUS_ORDER, type TaskPriority, type TaskStatus } from '../../../shared/tasks.js';
 import { nextRun, type Recurrence, type Schedule } from '../../../shared/schedules.js';
-import { runDue } from './runner.js';
+import { runOne } from './runner.js';
 
 /** Schedules. The runner does the firing. These routes only describe them. */
 
@@ -322,24 +322,15 @@ export default async function scheduleRoutes(app: FastifyInstance) {
 
     const { id } = request.params as { id: string };
 
-    const [row] = await db
-      .select({ id: schedules.id, name: schedules.name })
-      .from(schedules)
-      .where(and(eq(schedules.id, id), eq(schedules.organizationId, session.organization.id)))
-      .limit(1);
-
-    if (!row) return reply.code(404).send(fail('not_found', 'That schedule is gone.'));
-
-    // Pulling the time back makes it due, then the ordinary runner handles it.
-    await db.update(schedules).set({ nextRunAt: new Date(Date.now() - 1000) }).where(eq(schedules.id, id));
-    await runDue(app.log);
+    const schedule = await runOne(id, session.organization.id, app.log);
+    if (!schedule) return reply.code(404).send(fail('not_found', 'That schedule is gone.'));
 
     record(request, {
       organizationId: session.organization.id,
       actorUserId: session.user.id,
       actor: session.user.email,
       action: 'schedule.run',
-      resource: row.name,
+      resource: schedule.name,
     });
 
     return reply.code(202).send({ ran: true });
