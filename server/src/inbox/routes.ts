@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, sql as raw, count } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, lt, ne } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/client.js';
@@ -68,6 +68,46 @@ function toMessage(row: typeof messages.$inferSelect): Message {
   };
 }
 
+export function participantInWorkspaceQuery(conversationId: string, userId: string, organizationId: string) {
+  return db
+    .select({ id: conversationParticipants.id })
+    .from(conversationParticipants)
+    .innerJoin(conversations, eq(conversations.id, conversationParticipants.conversationId))
+    .where(
+      and(
+        eq(conversationParticipants.conversationId, conversationId),
+        eq(conversationParticipants.userId, userId),
+        eq(conversations.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+}
+
+export function inboxConversationListQuery(userId: string, organizationId: string) {
+  return db
+    .select({
+      conversationId: conversationParticipants.conversationId,
+      lastReadAt: conversationParticipants.lastReadAt,
+      organizationId: conversations.organizationId,
+      createdAt: conversations.createdAt,
+      updatedAt: conversations.updatedAt,
+    })
+    .from(conversationParticipants)
+    .innerJoin(conversations, eq(conversations.id, conversationParticipants.conversationId))
+    .where(
+      and(
+        eq(conversationParticipants.userId, userId),
+        eq(conversations.organizationId, organizationId),
+      ),
+    );
+}
+
+async function participantInWorkspace(conversationId: string, userId: string, organizationId: string) {
+  const [participant] = await participantInWorkspaceQuery(conversationId, userId, organizationId);
+
+  return participant ?? null;
+}
+
 export default async function inboxRoutes(app: FastifyInstance) {
   /* -------------------------------------------------------- conversations -- */
 
@@ -77,14 +117,8 @@ export default async function inboxRoutes(app: FastifyInstance) {
     if (!session) return;
     if (!(await allow(reply, session, 'workspace.view'))) return;
 
-    // Get all conversations the user participates in.
-    const myParts = await db
-      .select({
-        conversationId: conversationParticipants.conversationId,
-        lastReadAt: conversationParticipants.lastReadAt,
-      })
-      .from(conversationParticipants)
-      .where(eq(conversationParticipants.userId, session.user.id));
+    // A user can belong to several workspaces. Only the active workspace is visible.
+    const myParts = await inboxConversationListQuery(session.user.id, session.organization.id);
 
     const convIds = myParts.map((p) => p.conversationId);
     if (convIds.length === 0) return reply.send({ conversations: [] });
@@ -100,8 +134,8 @@ export default async function inboxRoutes(app: FastifyInstance) {
       .innerJoin(users, eq(conversationParticipants.userId, users.id))
       .where(
         and(
-          raw`${conversationParticipants.conversationId} in ${convIds}`,
-          raw`${conversationParticipants.userId} != ${session.user.id}`,
+          inArray(conversationParticipants.conversationId, convIds),
+          ne(conversationParticipants.userId, session.user.id),
         ),
       );
 
@@ -119,7 +153,7 @@ export default async function inboxRoutes(app: FastifyInstance) {
         createdAt: messages.createdAt,
       })
       .from(messages)
-      .where(raw`${messages.conversationId} in ${convIds}`)
+      .where(inArray(messages.conversationId, convIds))
       .orderBy(desc(messages.createdAt));
 
     // Deduplicate to keep only the first (most recent) per conversation.
@@ -133,7 +167,8 @@ export default async function inboxRoutes(app: FastifyInstance) {
     const myPartMap = new Map(myParts.map((p) => [p.conversationId, p.lastReadAt]));
     const summaries: ConversationSummary[] = [];
 
-    for (const convId of convIds) {
+    for (const part of myParts) {
+      const convId = part.conversationId;
       const other = otherByConv.get(convId);
       if (!other) continue;
 
@@ -149,7 +184,7 @@ export default async function inboxRoutes(app: FastifyInstance) {
           .where(
             and(
               eq(messages.conversationId, convId),
-              raw`${messages.senderId} != ${session.user.id}`,
+              ne(messages.senderId, session.user.id),
               gt(messages.createdAt, lastRead),
             ),
           );
@@ -162,26 +197,17 @@ export default async function inboxRoutes(app: FastifyInstance) {
           .where(
             and(
               eq(messages.conversationId, convId),
-              raw`${messages.senderId} != ${session.user.id}`,
+              ne(messages.senderId, session.user.id),
             ),
           );
         unread = uc?.n ?? 0;
       }
 
-      // Get the conversation row for timestamps.
-      const [conv] = await db
-        .select()
-        .from(conversations)
-        .where(eq(conversations.id, convId))
-        .limit(1);
-
-      if (!conv) continue;
-
       summaries.push({
-        id: conv.id,
-        organizationId: conv.organizationId,
-        createdAt: conv.createdAt.toISOString(),
-        updatedAt: conv.updatedAt.toISOString(),
+        id: convId,
+        organizationId: part.organizationId,
+        createdAt: part.createdAt.toISOString(),
+        updatedAt: part.updatedAt.toISOString(),
         otherUser: other,
         lastMessage: lastMsg
           ? { body: lastMsg.body, senderId: lastMsg.senderId, createdAt: lastMsg.createdAt.toISOString() }
@@ -233,7 +259,13 @@ export default async function inboxRoutes(app: FastifyInstance) {
     const myConvs = await db
       .select({ conversationId: conversationParticipants.conversationId })
       .from(conversationParticipants)
-      .where(eq(conversationParticipants.userId, session.user.id));
+      .innerJoin(conversations, eq(conversations.id, conversationParticipants.conversationId))
+      .where(
+        and(
+          eq(conversationParticipants.userId, session.user.id),
+          eq(conversations.organizationId, session.organization.id),
+        ),
+      );
 
     const myConvIds = myConvs.map((c) => c.conversationId);
 
@@ -243,7 +275,7 @@ export default async function inboxRoutes(app: FastifyInstance) {
         .from(conversationParticipants)
         .where(
           and(
-            raw`${conversationParticipants.conversationId} in ${myConvIds}`,
+            inArray(conversationParticipants.conversationId, myConvIds),
             eq(conversationParticipants.userId, userId),
           ),
         )
@@ -252,7 +284,16 @@ export default async function inboxRoutes(app: FastifyInstance) {
       if (existing.length > 0) {
         // Return the existing conversation.
         const existingConvId = existing[0]!.conversationId;
-        const [conv] = await db.select().from(conversations).where(eq(conversations.id, existingConvId)).limit(1);
+        const [conv] = await db
+          .select()
+          .from(conversations)
+          .where(
+            and(
+              eq(conversations.id, existingConvId),
+              eq(conversations.organizationId, session.organization.id),
+            ),
+          )
+          .limit(1);
         if (conv) {
           return reply.send({
             conversation: {
@@ -310,17 +351,7 @@ export default async function inboxRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { limit?: string; before?: string };
 
-    // Verify the user is a participant.
-    const [part] = await db
-      .select()
-      .from(conversationParticipants)
-      .where(
-        and(
-          eq(conversationParticipants.conversationId, id),
-          eq(conversationParticipants.userId, session.user.id),
-        ),
-      )
-      .limit(1);
+    const part = await participantInWorkspace(id, session.user.id, session.organization.id);
 
     if (!part) return reply.code(404).send(fail('not_found', 'Conversation not found.'));
 
@@ -374,17 +405,7 @@ export default async function inboxRoutes(app: FastifyInstance) {
       return reply.code(400).send(fail('invalid_request', 'Check the message.', fieldErrors(parsed.error)));
     }
 
-    // Verify the user is a participant.
-    const [part] = await db
-      .select()
-      .from(conversationParticipants)
-      .where(
-        and(
-          eq(conversationParticipants.conversationId, id),
-          eq(conversationParticipants.userId, session.user.id),
-        ),
-      )
-      .limit(1);
+    const part = await participantInWorkspace(id, session.user.id, session.organization.id);
 
     if (!part) return reply.code(404).send(fail('not_found', 'Conversation not found.'));
 
@@ -420,7 +441,7 @@ export default async function inboxRoutes(app: FastifyInstance) {
     await db
       .update(conversations)
       .set({ updatedAt: new Date() })
-      .where(eq(conversations.id, id));
+      .where(and(eq(conversations.id, id), eq(conversations.organizationId, session.organization.id)));
 
     // Fetch the sender info.
     const [sender] = await db
@@ -454,6 +475,9 @@ export default async function inboxRoutes(app: FastifyInstance) {
     if (!session) return;
 
     const { id } = request.params as { id: string };
+
+    const part = await participantInWorkspace(id, session.user.id, session.organization.id);
+    if (!part) return reply.code(404).send(fail('not_found', 'Conversation not found.'));
 
     await db
       .update(conversationParticipants)
@@ -500,6 +524,3 @@ export default async function inboxRoutes(app: FastifyInstance) {
     return reply.send({ members });
   });
 }
-
-// drizzle-orm lt import needed for the `before` query param.
-import { lt } from 'drizzle-orm';

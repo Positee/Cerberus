@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import { db } from '../db/client.js';
 import { monitors, heartbeats } from '../db/schema.js';
 import { deliver, notify, summarise } from '../schedules/deliver.js';
+import { applyCertificateHealth, inspectCertificateExpiry } from './certificate.js';
 import { ConcurrencyGate, InFlightJobs } from './in-flight-jobs.js';
 
 /**
@@ -30,6 +31,7 @@ type ProbeResult = {
   statusCode: number | null;
   errorMessage: string | null;
   certExpiryDays: number | null;
+  retryable: boolean;
 };
 
 /**
@@ -42,6 +44,9 @@ type ProbeResult = {
 async function probe(monitor: typeof monitors.$inferSelect): Promise<ProbeResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), monitor.timeoutSeconds * 1000);
+  const certificate = monitor.certExpiryCheck
+    ? inspectCertificateExpiry(monitor.url, monitor.timeoutSeconds * 1000)
+    : Promise.resolve(null);
 
   const start = Date.now();
 
@@ -89,25 +94,31 @@ async function probe(monitor: typeof monitors.$inferSelect): Promise<ProbeResult
       status = status === 'up' ? 'down' : 'up';
     }
 
-    return {
+    const certExpiryDays = await certificate;
+    const result: ProbeResult = {
       status,
       responseTimeMs: elapsed,
       statusCode: response.status,
       errorMessage: statusOk ? null : `Status ${response.status}`,
-      certExpiryDays: null,
+      certExpiryDays,
+      retryable: !statusOk,
     };
+    return { ...result, ...applyCertificateHealth(result, certExpiryDays) };
   } catch (error) {
     const elapsed = Date.now() - start;
     const message = error instanceof Error ? error.message.slice(0, 200) : 'Unknown error';
     const status = monitor.upsideDownMode ? 'up' : 'down';
 
-    return {
+    const certExpiryDays = await certificate;
+    const result: ProbeResult = {
       status,
       responseTimeMs: elapsed,
       statusCode: null,
       errorMessage: message.includes('abort') ? `Timed out after ${monitor.timeoutSeconds}s` : message,
-      certExpiryDays: null,
+      certExpiryDays,
+      retryable: true,
     };
+    return { ...result, ...applyCertificateHealth(result, certExpiryDays) };
   } finally {
     clearTimeout(timeout);
   }
@@ -125,7 +136,7 @@ async function probeWithRetries(
 ): Promise<ProbeResult> {
   let lastResult = await probeGate.run(() => probe(monitor));
 
-  if (lastResult.status !== 'up' && monitor.retries > 0) {
+  if (lastResult.status !== 'up' && lastResult.retryable && monitor.retries > 0) {
     for (let attempt = 0; attempt < monitor.retries; attempt++) {
       logger.info(
         `Monitor ${monitor.name} attempt ${attempt + 1}/${monitor.retries} failed: ${lastResult.errorMessage ?? lastResult.status}. Retrying.`,
@@ -134,7 +145,7 @@ async function probeWithRetries(
       await new Promise((resolve) => setTimeout(resolve, monitor.retryIntervalSeconds * 1000));
       lastResult = await probeGate.run(() => probe(monitor));
 
-      if (lastResult.status === 'up') break;
+      if (lastResult.status === 'up' || !lastResult.retryable) break;
     }
   }
 

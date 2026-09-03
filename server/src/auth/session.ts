@@ -23,6 +23,12 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+/** Returns the database identity of the current cookie without exposing its token. */
+export function currentSessionTokenHash(request: FastifyRequest): string | null {
+  const token = request.cookies[COOKIE_NAME];
+  return token ? hashToken(token) : null;
+}
+
 export async function createSession(
   request: FastifyRequest,
   reply: FastifyReply,
