@@ -19,6 +19,8 @@ export type Permission =
   | 'task.manage'
   | 'project.create'
   | 'alert.manage'
+  /** Publish and remove personal learning resources. */
+  | 'knowledge.manage'
   | 'member.invite'
   /** Change somebody's role, or remove them. */
   | 'member.manage'
@@ -41,6 +43,10 @@ export const FLAT_POLICY: WorkspacePolicy = {
 
 export function can(permission: Permission, context: PermissionContext): boolean {
   const { role, kind, policy } = context;
+
+  if (permission === 'knowledge.manage') {
+    return kind === 'personal' && (role === 'owner' || role === 'admin');
+  }
 
   // Money and the existence of the workspace stay with one person.
   if (permission === 'workspace.billing' || permission === 'workspace.delete') {

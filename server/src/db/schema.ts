@@ -785,6 +785,54 @@ export const announcementReads = pgTable(
   ],
 );
 
+/* --------------------------------------------------------- knowledge base -- */
+
+export const knowledgeResourceType = pgEnum('knowledge_resource_type', ['article', 'video']);
+export const knowledgeTopic = pgEnum('knowledge_topic', ['foundations', 'networking', 'identity', 'defense']);
+
+/** A lesson that a personal workspace adds to the built-in learning path. */
+export const knowledgeResources = pgTable(
+  'knowledge_resources',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    topic: knowledgeTopic('topic').notNull(),
+    type: knowledgeResourceType('type').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull(),
+    body: text('body').notNull().default(''),
+    sourceUrl: text('source_url'),
+    durationMinutes: integer('duration_minutes').notNull().default(5),
+    published: boolean('published').notNull().default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('knowledge_resources_org_idx').on(table.organizationId, table.topic, table.createdAt)],
+);
+
+/** One learner's completion mark for a built-in or custom lesson. */
+export const knowledgeProgress = pgTable(
+  'knowledge_progress',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    lessonKey: text('lesson_key').notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('knowledge_progress_key').on(table.organizationId, table.userId, table.lessonKey),
+    index('knowledge_progress_user_idx').on(table.organizationId, table.userId),
+  ],
+);
+
 /* ------------------------------------------------------------------ inbox -- */
 
 /**

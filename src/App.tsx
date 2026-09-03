@@ -23,6 +23,7 @@ import Invites from './pages/Invites';
 import Usage from './pages/Usage';
 import Locked from './pages/Locked';
 import Join from './pages/Join';
+import KnowledgeBase from './pages/knowledge/KnowledgeBase';
 import { ALL_ITEMS } from './app/nav';
 import { isOrganization, useSession } from './app/session';
 import { planForModule, planReaches } from '../shared/plans';
@@ -84,6 +85,7 @@ export default function App() {
     if (path === '/help') return <Help />;
     if (path === '/invites') return <Invites session={session} />;
     if (path === '/usage') return <Usage session={session} />;
+    if (path === '/knowledge-base') return <KnowledgeBase session={session} />;
 
     return PAGES[path] ?? <Placeholder title={label} />;
   };

@@ -44,6 +44,11 @@ import type {
   MonitorSummary,
   SaveMonitorRequest,
 } from '../../shared/argus';
+import type {
+  KnowledgePayload,
+  KnowledgeResource,
+  SaveKnowledgeResourceRequest,
+} from '../../shared/knowledge';
 
 /**
  * The one place the browser talks to the API.
@@ -589,6 +594,40 @@ export function markConversationRead(conversationId: string): Promise<void> {
 
 export function listInboxMembers(): Promise<{ members: InboxMember[] }> {
   return request<{ members: InboxMember[] }>('/api/inbox/members');
+}
+
+/* ---------------------------------------------------------- knowledge base -- */
+
+export function getKnowledgeBase(): Promise<KnowledgePayload> {
+  return request<KnowledgePayload>('/api/knowledge');
+}
+
+export function createKnowledgeResource(body: SaveKnowledgeResourceRequest): Promise<KnowledgeResource> {
+  return request<KnowledgeResource>('/api/knowledge/resources', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateKnowledgeResource(
+  id: string,
+  body: SaveKnowledgeResourceRequest,
+): Promise<KnowledgeResource> {
+  return request<KnowledgeResource>(`/api/knowledge/resources/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteKnowledgeResource(id: string): Promise<void> {
+  return request<void>(`/api/knowledge/resources/${id}`, { method: 'DELETE' });
+}
+
+export function setKnowledgeProgress(lessonKey: string, completed: boolean): Promise<void> {
+  return request<void>(`/api/knowledge/progress/${encodeURIComponent(lessonKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ completed }),
+  });
 }
 
 /* ------------------------------------------------------------------ plan -- */

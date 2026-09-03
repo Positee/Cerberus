@@ -57,6 +57,9 @@ export type AuditAction =
   | 'schedule.update'
   | 'schedule.delete'
   | 'schedule.run'
+  | 'knowledge.create'
+  | 'knowledge.update'
+  | 'knowledge.delete'
   // Reading the trail is itself privileged, so it leaves a row.
   | 'audit.export'
   /** Somebody asked for something their role or plan forbids. */
@@ -113,6 +116,9 @@ export const ACTION_LABEL: Record<AuditAction, string> = {
   'schedule.update': 'Changed a schedule',
   'schedule.delete': 'Deleted a schedule',
   'schedule.run': 'Ran a schedule',
+  'knowledge.create': 'Created a lesson',
+  'knowledge.update': 'Changed a lesson',
+  'knowledge.delete': 'Deleted a lesson',
   'audit.export': 'Exported the audit log',
   'permission.denied': 'Was refused',
   'monitor.create': 'Created a monitor',
