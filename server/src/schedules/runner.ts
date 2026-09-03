@@ -25,10 +25,11 @@ import {
  */
 
 const TICK_MS = 60_000;
+type StoredSchedule = typeof schedules.$inferSelect;
 
 /** Fires one schedule. Returns what to write in its run row. */
 async function fire(
-  schedule: typeof schedules.$inferSelect,
+  schedule: StoredSchedule,
 ): Promise<{ outcome: 'ok' | 'skipped' | 'failed'; note: string | null; taskId: string | null }> {
   const kind = schedule.kind as ScheduleKind;
 
@@ -81,7 +82,78 @@ async function fire(
   return { outcome: 'ok', note: null, taskId: created.id };
 }
 
-/** Runs everything that is due. Exported so a test or a route can force it. */
+/** Runs one already-selected schedule and records the result. */
+async function execute(schedule: StoredSchedule, logger?: FastifyBaseLogger): Promise<void> {
+  // The next time is set before the work runs. A schedule that throws still
+  // moves forward, so one bad run cannot fire in a loop. A paused schedule can
+  // be run manually, but stays paused afterwards.
+  const following = schedule.enabled ? nextRun(schedule.recurrence as Recurrence, new Date()) : null;
+
+  await db
+    .update(schedules)
+    .set({ nextRunAt: following, lastRunAt: new Date(), runCount: schedule.runCount + 1 })
+    .where(and(eq(schedules.id, schedule.id), eq(schedules.organizationId, schedule.organizationId)));
+
+  try {
+    const result = await fire(schedule);
+
+    // The bell always gets it, so a person has one place to look even when
+    // every channel is down.
+    const message = result.note ?? `${schedule.name} ran.`;
+    await notify({
+      organizationId: schedule.organizationId,
+      source: 'schedule',
+      title: schedule.name,
+      body: message,
+      href: '/scheduled',
+    });
+
+    const delivered = schedule.contactPointId
+      ? await deliver(schedule.contactPointId, schedule.name, message)
+      : [];
+
+    const sending = summarise(delivered);
+
+    await db.insert(scheduleRuns).values({
+      scheduleId: schedule.id,
+      outcome: result.outcome,
+      note: [result.note, sending].filter(Boolean).join(' · ') || null,
+      createdTaskId: result.taskId,
+    });
+    logger?.info(`Schedule ${schedule.name} ran: ${result.outcome}.`);
+  } catch (error) {
+    await db.insert(scheduleRuns).values({
+      scheduleId: schedule.id,
+      outcome: 'failed',
+      note: error instanceof Error ? error.message.slice(0, 300) : 'The run failed.',
+    });
+    logger?.error(error);
+  }
+}
+
+/** Builds the ownership-scoped lookup used by a user-triggered run. */
+export function scheduleForRunQuery(scheduleId: string, organizationId: string) {
+  return db
+    .select()
+    .from(schedules)
+    .where(and(eq(schedules.id, scheduleId), eq(schedules.organizationId, organizationId)))
+    .limit(1);
+}
+
+/** Runs exactly one schedule belonging to the authenticated organization. */
+export async function runOne(
+  scheduleId: string,
+  organizationId: string,
+  logger?: FastifyBaseLogger,
+): Promise<StoredSchedule | null> {
+  const [schedule] = await scheduleForRunQuery(scheduleId, organizationId);
+  if (!schedule) return null;
+
+  await execute(schedule, logger);
+  return schedule;
+}
+
+/** Runs everything that is due. Used only by the timer-driven worker. */
 export async function runDue(logger?: FastifyBaseLogger): Promise<number> {
   const due = await db
     .select()
@@ -91,50 +163,7 @@ export async function runDue(logger?: FastifyBaseLogger): Promise<number> {
     .limit(50);
 
   for (const schedule of due) {
-    // The next time is set before the work runs. A schedule that throws still
-    // moves forward, so one bad run cannot fire in a loop.
-    const following = nextRun(schedule.recurrence as Recurrence, new Date());
-
-    await db
-      .update(schedules)
-      .set({ nextRunAt: following, lastRunAt: new Date(), runCount: schedule.runCount + 1 })
-      .where(eq(schedules.id, schedule.id));
-
-    try {
-      const result = await fire(schedule);
-
-      // The bell always gets it, so a person has one place to look even when
-      // every channel is down.
-      const message = result.note ?? `${schedule.name} ran.`;
-      await notify({
-        organizationId: schedule.organizationId,
-        source: 'schedule',
-        title: schedule.name,
-        body: message,
-        href: '/scheduled',
-      });
-
-      const delivered = schedule.contactPointId
-        ? await deliver(schedule.contactPointId, schedule.name, message)
-        : [];
-
-      const sending = summarise(delivered);
-
-      await db.insert(scheduleRuns).values({
-        scheduleId: schedule.id,
-        outcome: result.outcome,
-        note: [result.note, sending].filter(Boolean).join(' · ') || null,
-        createdTaskId: result.taskId,
-      });
-      logger?.info(`Schedule ${schedule.name} ran: ${result.outcome}.`);
-    } catch (error) {
-      await db.insert(scheduleRuns).values({
-        scheduleId: schedule.id,
-        outcome: 'failed',
-        note: error instanceof Error ? error.message.slice(0, 300) : 'The run failed.',
-      });
-      logger?.error(error);
-    }
+    await execute(schedule, logger);
   }
 
   return due.length;
