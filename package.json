@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:api": "npm --prefix server run dev",
     "build": "tsc --noEmit && vite build",
+    "test": "npm --prefix server run test",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && npm --prefix server run typecheck",
     "db:generate": "npm --prefix server run db:generate",
